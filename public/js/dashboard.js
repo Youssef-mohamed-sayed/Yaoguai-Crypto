@@ -34,7 +34,7 @@ function renderCategory(cat, mountId){
   document.getElementById(mountId).innerHTML = items.map(cardHTML).join("");
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+function renderDashboard() {
   renderCategory("encoding", "grid-encoding");
   renderCategory("encryption", "grid-encryption");
   renderCategory("hashing", "grid-hashing");
@@ -50,4 +50,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const target = firstUnfinished || courseOrdered().find(c => c.implemented);
     if (target) continueBtn.href = `lessons/${target.id}.html`;
   }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  renderDashboard();
+  // Re-render cards & chip when progress syncs from server after login
+  window.addEventListener("yaoguai:progress-synced", () => renderDashboard());
 });

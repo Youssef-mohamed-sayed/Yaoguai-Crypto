@@ -73,4 +73,9 @@ document.addEventListener("DOMContentLoaded", () => {
   scrollSpy();
   buildPrevNext();
   bootTopbarChip();
+  // Re-run chip update after progress syncs from server
+  window.addEventListener("yaoguai:progress-synced", () => {
+    bootTopbarChip();
+    if (typeof updateProgressUI === "function") updateProgressUI();
+  });
 });

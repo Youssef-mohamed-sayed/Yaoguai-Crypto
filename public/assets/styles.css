@@ -96,7 +96,11 @@ code, pre{ font-family:var(--mono); }
 .topnav a{ color:var(--paper-dim); padding:6px 0; border-bottom:2px solid transparent; }
 .topnav a:hover, .topnav a.active{ color:var(--paper); border-color:var(--red); }
 
-.topbar-tools{ display:flex; align-items:center; gap:14px; }
+.topbar-tools{ display:flex; align-items:center; gap:10px; flex-shrink:0; }
+/* Auth topbar wrapper — sits alongside progress-chip */
+.auth-topbar-wrap{ display:flex; align-items:center; gap:8px; }
+/* Tight the topbar layout on small screens */
+@media (max-width:680px){ .topnav{ display:none; } }
 .progress-chip{
   font-family:var(--mono); font-size:12px; color:var(--paper-faint);
   border:1px solid var(--line); padding:5px 10px;
@@ -302,6 +306,17 @@ pre.code .str{ color:#c9b37a; }
 .mc-opt{ border:1px solid var(--line); padding:10px 14px; cursor:pointer; font-size:14px; }
 .mc-opt:hover{ border-color:var(--paper-faint); }
 .mc-opt.picked{ border-color:var(--red-bright); }
+
+/* ---------- Guest mode lock UX ---------- */
+.mc-opt[data-guest]{ cursor:not-allowed; opacity:0.65; }
+.mc-opt[data-guest]:hover{ border-color:var(--line); }
+/* Guest badge on locked tasks */
+.task-guest-badge{
+  display:inline-block; font-family:var(--mono); font-size:11px;
+  color:var(--red-bright); border:1px solid var(--red-deep);
+  padding:2px 8px; margin-bottom:8px;
+  background:var(--red-wash); letter-spacing:.05em;
+}
 
 /* ---------- CTF challenge card ---------- */
 .ctf{

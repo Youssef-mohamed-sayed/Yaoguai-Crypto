@@ -1,8 +1,7 @@
 /* ============================================================
-   progress.js — front-end-only progress tracking.
-   Stores state per lesson id in localStorage under one key.
-   Designed so a future backend can replace getStore/setStore
-   with real API calls without touching call sites elsewhere.
+   progress.js — progress tracking with JWT authenticated sync.
+   Stores state per lesson id in localStorage, and automatically
+   syncs with the YAOGUAI backend database for logged-in users.
    ============================================================ */
 
 const PROGRESS_KEY = "yaoguai:progress:v1";
@@ -11,8 +10,13 @@ function getStore() {
   try { return JSON.parse(localStorage.getItem(PROGRESS_KEY)) || {}; }
   catch (e) { return {}; }
 }
+
 function setStore(obj) {
-  localStorage.setItem(PROGRESS_KEY, JSON.stringify(obj));
+  try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(obj)); } catch (_) {}
+  // Sync to server if authenticated
+  if (window.CryptoAPI && window.CryptoAPI.auth && window.CryptoAPI.auth.isLoggedIn()) {
+    window.CryptoAPI.auth.saveProgress(obj).catch(() => {});
+  }
 }
 
 const Progress = {
@@ -24,8 +28,9 @@ const Progress = {
   setSectionSeen(id, sectionId) {
     const store = getStore();
     const entry = store[id] || { status: "available", sections: {}, challenge: false, pct: 0 };
+    entry.sections = entry.sections || {};
     entry.sections[sectionId] = true;
-    entry.status = "in_progress";
+    if (entry.status !== "done") entry.status = "in_progress";
     store[id] = entry;
     setStore(store);
   },
@@ -55,7 +60,33 @@ const Progress = {
     const done = allIds.filter((id) => (store[id] || {}).status === "done").length;
     return { done, total: allIds.length };
   },
-  reset() { localStorage.removeItem(PROGRESS_KEY); },
+  syncFromServer(serverProgress) {
+    if (!serverProgress || typeof serverProgress !== "object") return;
+    const store = getStore();
+    const merged = Object.assign({}, store, serverProgress);
+    try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(merged)); } catch (_) {}
+    window.dispatchEvent(new CustomEvent("yaoguai:progress-synced", { detail: merged }));
+  },
+  async loadFromServer() {
+    if (window.CryptoAPI && window.CryptoAPI.auth && window.CryptoAPI.auth.isLoggedIn()) {
+      try {
+        const res = await window.CryptoAPI.auth.getProgress();
+        if (res && res.progress) {
+          this.syncFromServer(res.progress);
+        }
+      } catch (_) {}
+    }
+  },
+  reset() {
+    try { localStorage.removeItem(PROGRESS_KEY); } catch (_) {}
+  },
 };
 
 window.Progress = Progress;
+
+// Auto-sync on page load if logged in
+if (typeof document !== "undefined") {
+  document.addEventListener("DOMContentLoaded", () => {
+    Progress.loadFromServer();
+  });
+}

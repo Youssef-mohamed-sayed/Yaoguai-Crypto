@@ -24,6 +24,7 @@ import decryption
 import hashing
 import crack
 import hashescom
+import auth
 from rsa_core import rsa_encrypt_int, rsa_decrypt_int
 
 HOST = "127.0.0.1"
@@ -54,8 +55,8 @@ def block_cracking_when_hosted():
 def allow_local_cors(resp):
     # Lets the pages call the API even if index.html is opened straight from disk.
     resp.headers.setdefault("Access-Control-Allow-Origin", "*")
-    resp.headers.setdefault("Access-Control-Allow-Headers", "Content-Type")
-    resp.headers.setdefault("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+    resp.headers.setdefault("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    resp.headers.setdefault("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
     return resp
 
 
@@ -89,6 +90,31 @@ def ok(result):
 
 def err(message, status=400):
     return jsonify({"success": False, "error": message}), status
+
+
+def get_auth_user():
+    """Extracts and verifies JWT token from Authorization header or ?token=."""
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    elif "token" in request.args:
+        token = request.args["token"]
+    if not token:
+        return None
+    try:
+        payload = auth.decode_token(token)
+        user_id = int(payload.get("user_id") or payload.get("sub"))
+        return auth.get_user_by_id(user_id)
+    except Exception:
+        return None
+
+
+def require_auth():
+    user = get_auth_user()
+    if not user:
+        return None, err("Authentication required. Please log in.", 401)
+    return user, None
 
 
 def get_json():
@@ -851,6 +877,137 @@ def file_decrypt_hybrid_route():
         download_name=orig_name,
         mimetype="application/octet-stream"
     )
+
+
+# ------------------------------------------------ AUTH & USER SESSIONS (JWT)
+@app.route("/api/auth/register", methods=["POST"])
+def auth_register_route():
+    data = {}
+    avatar_bytes = None
+    avatar_filename = None
+
+    if request.form:
+        data.update(request.form.to_dict())
+    if request.is_json:
+        data.update(request.get_json(silent=True) or {})
+
+    if "avatar" in request.files:
+        f = request.files["avatar"]
+        if f and f.filename:
+            avatar_bytes = f.read()
+            avatar_filename = secure_filename(f.filename)
+    elif "avatar_b64" in data and data["avatar_b64"]:
+        try:
+            avatar_bytes = base64.b64decode(data["avatar_b64"])
+            avatar_filename = secure_filename(data.get("avatar_filename") or "avatar.png")
+        except Exception:
+            return err("Invalid base64 payload for avatar image.", 400)
+
+    username = data.get("username", "")
+    password = data.get("password", "")
+
+    try:
+        user_info, token = auth.register_user(
+            username=username,
+            password=password,
+            avatar_bytes=avatar_bytes,
+            avatar_filename=avatar_filename
+        )
+        return ok({"user": user_info, "token": token})
+    except ValueError as val_err:
+        return err(str(val_err), 400)
+    except Exception as exc:
+        return err(f"Registration failed: {exc}", 500)
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login_route():
+    data = {}
+    if request.form:
+        data.update(request.form.to_dict())
+    if request.is_json:
+        data.update(request.get_json(silent=True) or {})
+
+    username = data.get("username", "")
+    password = data.get("password", "")
+
+    try:
+        user_info, token = auth.login_user(username, password)
+        return ok({"user": user_info, "token": token})
+    except ValueError as val_err:
+        return err(str(val_err), 401)
+    except Exception as exc:
+        return err(f"Login failed: {exc}", 500)
+
+
+@app.route("/api/auth/me", methods=["GET"])
+def auth_me_route():
+    user, auth_err = require_auth()
+    if auth_err:
+        return auth_err
+    return ok({"user": user})
+
+
+@app.route("/api/auth/avatar", methods=["POST"])
+def auth_avatar_route():
+    user, auth_err = require_auth()
+    if auth_err:
+        return auth_err
+
+    avatar_bytes = None
+    avatar_filename = None
+
+    if "avatar" in request.files:
+        f = request.files["avatar"]
+        if f and f.filename:
+            avatar_bytes = f.read()
+            avatar_filename = secure_filename(f.filename)
+    else:
+        data = request.get_json(silent=True) or (request.form.to_dict() if request.form else {})
+        if "avatar_b64" in data and data["avatar_b64"]:
+            try:
+                avatar_bytes = base64.b64decode(data["avatar_b64"])
+                avatar_filename = secure_filename(data.get("avatar_filename") or "avatar.png")
+            except Exception:
+                return err("Invalid base64 payload for avatar image.", 400)
+
+    if not avatar_bytes or not avatar_filename:
+        return err("Please select a .png or .jpg avatar file to upload.", 400)
+
+    try:
+        avatar_url = auth.update_user_avatar(user["id"], avatar_bytes, avatar_filename)
+        return ok({"avatar_url": avatar_url})
+    except ValueError as val_err:
+        return err(str(val_err), 400)
+    except Exception as exc:
+        return err(f"Avatar update failed: {exc}", 500)
+
+
+@app.route("/api/user/progress", methods=["GET", "POST"])
+def user_progress_route():
+    user, auth_err = require_auth()
+    if auth_err:
+        return auth_err
+
+    if request.method == "GET":
+        progress = auth.get_progress(user["id"])
+        return ok({"progress": progress})
+
+    # POST: update / save progress
+    payload = request.get_json(silent=True) or (request.form.to_dict() if request.form else {})
+    current = auth.get_progress(user["id"])
+
+    if "progress" in payload and isinstance(payload["progress"], dict):
+        current.update(payload["progress"])
+    elif "lesson_id" in payload:
+        lid = payload["lesson_id"]
+        if isinstance(payload.get("data"), dict):
+            current[lid] = payload["data"]
+        else:
+            current[lid] = payload.get("data", True)
+
+    auth.save_progress(user["id"], current)
+    return ok({"progress": current})
 
 
 if __name__ == "__main__":
