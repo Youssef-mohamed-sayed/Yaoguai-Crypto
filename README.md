@@ -55,6 +55,8 @@ python scripts/migrate_sqlite.py --source backup/yaoguai.db --avatars backup/ava
 ```
 
 The importer uses one transaction and refuses to overwrite existing account data.
+It prefers `DATABASE_URL_UNPOOLED` for the import when that direct URL is available;
+normal application requests continue using pooled `DATABASE_URL`.
 It preserves users, progress, stored signing settings, unexpired sessions, and
 avatars. It stops on missing avatars; `--skip-missing-avatars` explicitly resets
 those unavailable images to the default. A different `YAOGUAI_JWT_SECRET` requires
@@ -73,6 +75,17 @@ expendable test database. **These tests truncate the application tables in that
 database. Never point this variable at Production or a database containing data.**
 Tests cover migration, username uniqueness, per-account progress and avatars,
 revoked tokens, and account-switch/logout isolation.
+
+### Agent tooling
+
+The Neon plugin supplies the Neon agent skills. The project also registers an
+OAuth-only Neon MCP server in `.codex/config.toml`, scoped to Neon project
+`odd-recipe-08068016`. Codex prompts for MCP sign-in on first use; CLI sign-in and
+MCP OAuth are separate. No API key is stored in the project configuration.
+
+Local Vercel linkage lives in ignored `.vercel/`, and local Neon linkage in ignored
+`.neon`. Environment pulls must use git-ignored `.env.*` files. Preserve existing
+environment values when linking Neon by using `--no-env-pull`.
 
 ## Project structure
 

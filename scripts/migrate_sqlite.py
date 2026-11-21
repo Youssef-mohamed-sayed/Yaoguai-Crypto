@@ -5,6 +5,7 @@ Import:  same command with --apply (DATABASE_URL must be set)
 """
 import argparse
 import json
+import os
 import pathlib
 import sqlite3
 import time
@@ -114,7 +115,7 @@ def main():
         print(json.dumps({"mode": "import" if args.apply else "dry-run", **counts,
                           "missing_avatars": records["missing_avatars"]}))
         if args.apply:
-            import_records(records, database.configured_url())
+            import_records(records, os.environ.get("DATABASE_URL_UNPOOLED") or database.configured_url())
             print("Import complete. Account IDs, password hashes, and progress were preserved.")
         else:
             print("Validation complete. No databases were changed. Add --apply to import into an empty target.")

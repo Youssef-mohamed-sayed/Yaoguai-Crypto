@@ -27,3 +27,4 @@ desktop.ini
 *.db-shm
 .test-runtime/
 !.env.example
+.neon
