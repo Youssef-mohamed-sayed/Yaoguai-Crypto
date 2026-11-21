@@ -4,12 +4,12 @@ avatar handling (.png, .jpg strictly enforced), and progress saving for YAOGUAI.
 Compatible with both standard local runs and Vercel Serverless (read-only filesystem).
 """
 import base64
-import datetime
 import hashlib
 import hmac
 import json
 import os
 import re
+import secrets
 import sqlite3
 import tempfile
 import time
@@ -25,7 +25,7 @@ try:
 except ImportError:
     HAS_PYJWT = False
 
-JWT_SECRET = os.environ.get("YAOGUAI_JWT_SECRET", "yaoguai-crypto-secret-key-2024-secure-jwt")
+JWT_SECRET = os.environ.get("YAOGUAI_JWT_SECRET")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 14
 
@@ -107,6 +107,18 @@ def init_db(conn=None):
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS auth_settings (
+                name TEXT PRIMARY KEY, value TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                token_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                expires_at INTEGER NOT NULL
+            )
+        """)
         conn.commit()
     except Exception as e:
         print(f"[AUTH] init_db note: {e}")
@@ -134,69 +146,78 @@ def _b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s.encode("ascii"))
 
 
+def get_jwt_secret():
+    if JWT_SECRET:
+        return JWT_SECRET
+    # Never sign sessions with a publicly known default key. Persist the local
+    # fallback alongside the accounts so restarts and worker processes agree.
+    with get_db() as conn:
+        conn.execute("INSERT OR IGNORE INTO auth_settings (name, value) VALUES (?, ?)",
+                     ("jwt_secret", secrets.token_hex(32)))
+        return conn.execute("SELECT value FROM auth_settings WHERE name = 'jwt_secret'").fetchone()[0]
+
+
 def create_token(user_id: int, username: str) -> str:
     now_ts = int(time.time())
     exp_ts = now_ts + (JWT_EXPIRATION_DAYS * 86400)
-    payload = {
-        "sub": str(user_id),
-        "user_id": int(user_id),
-        "username": username,
-        "iat": now_ts,
-        "exp": exp_ts
-    }
+    token_id = secrets.token_urlsafe(32)
+    payload = {"sub": str(user_id), "user_id": int(user_id), "username": username,
+               "iat": now_ts, "exp": exp_ts, "jti": token_id}
+    secret = get_jwt_secret()
     if HAS_PYJWT:
-        try:
-            return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-        except Exception:
-            pass
-
-    # Pure stdlib HS256 fallback
-    header = {"alg": "HS256", "typ": "JWT"}
-    h_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
-    p_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-    msg = f"{h_b64}.{p_b64}".encode("ascii")
-    sig = hmac.new(JWT_SECRET.encode("utf-8"), msg, hashlib.sha256).digest()
-    s_b64 = _b64url_encode(sig)
-    return f"{h_b64}.{p_b64}.{s_b64}"
+        token = jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
+    else:
+        header = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+        body = _b64url_encode(json.dumps(payload).encode())
+        msg = f"{header}.{body}".encode("ascii")
+        signature = hmac.new(secret.encode(), msg, hashlib.sha256).digest()
+        token = f"{header}.{body}.{_b64url_encode(signature)}"
+    with get_db() as conn:
+        conn.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", (now_ts,))
+        conn.execute("INSERT INTO auth_sessions (token_id, user_id, expires_at) VALUES (?, ?, ?)",
+                     (token_id, user_id, exp_ts))
+    return token
 
 
 def decode_token(token: str) -> Dict[str, Any]:
-    if not token or not isinstance(token, str):
+    if not isinstance(token, str) or not token.strip():
         raise ValueError("Invalid authentication token.")
-
-    token = token.strip()
-    if HAS_PYJWT:
-        try:
-            return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        except jwt.ExpiredSignatureError:
-            raise ValueError("Session token has expired. Please log in again.")
-        except Exception:
-            # Try stdlib fallback before failing
-            pass
-
-    parts = token.split(".")
-    if len(parts) != 3:
-        raise ValueError("Invalid authentication token format.")
-
-    h_b64, p_b64, s_b64 = parts
+    secret = get_jwt_secret()
     try:
-        msg = f"{h_b64}.{p_b64}".encode("ascii")
-        expected_sig = hmac.new(JWT_SECRET.encode("utf-8"), msg, hashlib.sha256).digest()
-        actual_sig = _b64url_decode(s_b64)
-        if not hmac.compare_digest(expected_sig, actual_sig):
-            raise ValueError("Invalid authentication signature.")
+        if HAS_PYJWT:
+            payload = jwt.decode(token, secret, algorithms=[JWT_ALGORITHM],
+                                 options={"require": ["sub", "user_id", "iat", "exp", "jti"]})
+        else:
+            header, body, signature = token.split(".")
+            if json.loads(_b64url_decode(header)).get("alg") != JWT_ALGORITHM:
+                raise ValueError()
+            expected = hmac.new(secret.encode(), f"{header}.{body}".encode("ascii"), hashlib.sha256).digest()
+            if not hmac.compare_digest(expected, _b64url_decode(signature)):
+                raise ValueError()
+            payload = json.loads(_b64url_decode(body))
+        if (not isinstance(payload, dict) or not isinstance(payload["user_id"], int)
+                or isinstance(payload["user_id"], bool) or payload["user_id"] <= 0
+                or payload["sub"] != str(payload["user_id"])
+                or not isinstance(payload["jti"], str)
+                or int(payload["iat"]) > int(time.time())
+                or int(payload["exp"]) <= int(time.time())):
+            raise ValueError()
+    except Exception:
+        raise ValueError("Your session is invalid or has expired. Please log in again.") from None
+    with get_db() as conn:
+        session = conn.execute(
+            "SELECT user_id FROM auth_sessions WHERE token_id = ? AND user_id = ? AND expires_at > ?",
+            (payload["jti"], payload["user_id"], int(time.time()))).fetchone()
+    if not session:
+        raise ValueError("Your session has ended. Please log in again.")
+    return payload
 
-        payload_bytes = _b64url_decode(p_b64)
-        payload = json.loads(payload_bytes.decode("utf-8"))
 
-        if "exp" in payload and int(payload["exp"]) < int(time.time()):
-            raise ValueError("Session token has expired. Please log in again.")
-
-        return payload
-    except Exception as e:
-        if "expired" in str(e).lower():
-            raise ValueError("Session token has expired. Please log in again.")
-        raise ValueError("Invalid authentication token.")
+def revoke_token(token: str):
+    payload = decode_token(token)
+    with get_db() as conn:
+        conn.execute("DELETE FROM auth_sessions WHERE token_id = ? AND user_id = ?",
+                     (payload["jti"], payload["user_id"]))
 
 
 # ------------------------------------------------ PASSWORD HASHING
@@ -241,7 +262,7 @@ def validate_avatar_file(raw_bytes: bytes, filename: str) -> Tuple[bytes, str]:
 
 
 def save_avatar_file(user_id: int, raw_bytes: bytes, ext: str) -> str:
-    filename = f"avatar_{user_id}_{int(time.time())}{ext}"
+    filename = f"avatar_{user_id}_{secrets.token_hex(16)}{ext}"
     dest_path = os.path.join(AVATARS_DIR, filename)
     with open(dest_path, "wb") as f:
         f.write(raw_bytes)

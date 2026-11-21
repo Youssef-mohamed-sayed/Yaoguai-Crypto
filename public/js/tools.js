@@ -957,12 +957,16 @@ function renderParams(){
       if (p.area) inp.rows = 2;
       // "persist" params (e.g. a Hashes.com API key) are remembered in this
       // browser between visits, so the person doesn't retype it every time.
-      const stored = p.persist ? localStorage.getItem("yaoguai_" + p.id) : null;
+      const owner = window.CryptoAPI.auth.getUser();
+      const storageKey = p.persist && owner ? `yaoguai:tool:${owner.id}:${p.id}` : null;
+      const stored = storageKey ? localStorage.getItem(storageKey) : null;
       inp.value = state.values[p.id] != null ? state.values[p.id] : (stored || p.value || "");
       if (stored != null) state.values[p.id] = stored;
       inp.addEventListener("input", () => {
         state.values[p.id] = inp.value;
-        if (p.persist) localStorage.setItem("yaoguai_" + p.id, inp.value);
+        const currentOwner = window.CryptoAPI.auth.getUser();
+        if (storageKey && currentOwner && currentOwner.id === owner.id)
+          localStorage.setItem(storageKey, inp.value);
       });
     }
     wrap.append(lab, inp); els.params.appendChild(wrap);

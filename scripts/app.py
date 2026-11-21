@@ -64,6 +64,8 @@ def block_cracking_when_hosted():
 
 @app.after_request
 def allow_local_cors(resp):
+    if request.path.startswith(("/api/auth/", "/api/user/")):
+        resp.headers["Cache-Control"] = "no-store"
     # Lets the pages call the API even if index.html is opened straight from disk.
     resp.headers.setdefault("Access-Control-Allow-Origin", "*")
     resp.headers.setdefault("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -109,13 +111,11 @@ def err(message, status=400):
 
 
 def get_auth_user():
-    """Extracts and verifies JWT token from Authorization header or ?token=."""
+    """Identify the account exclusively from its verified bearer session."""
     auth_header = request.headers.get("Authorization", "")
     token = None
     if auth_header.startswith("Bearer "):
         token = auth_header[7:].strip()
-    elif "token" in request.args:
-        token = request.args["token"]
     if not token:
         return None
     try:
@@ -977,6 +977,15 @@ def auth_me_route():
     return ok({"user": user})
 
 
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout_route():
+    user, auth_err = require_auth()
+    if auth_err:
+        return auth_err
+    auth.revoke_token(request.headers["Authorization"][7:].strip())
+    return ok({"logged_out": True})
+
+
 @app.route("/api/auth/avatar", methods=["POST"])
 def auth_avatar_route():
     user, auth_err = require_auth()
@@ -1025,12 +1034,16 @@ def user_progress_route():
 
     # POST: update / save progress
     payload = request.get_json(silent=True) or (request.form.to_dict() if request.form else {})
+    if not isinstance(payload, dict):
+        return err("Progress must be a JSON object.", 400)
     current = auth.get_progress(user["id"])
 
     if "progress" in payload and isinstance(payload["progress"], dict):
         current.update(payload["progress"])
     elif "lesson_id" in payload:
         lid = payload["lesson_id"]
+        if not isinstance(lid, str) or not lid or len(lid) > 100:
+            return err("Lesson ID must be a non-empty string of at most 100 characters.", 400)
         if isinstance(payload.get("data"), dict):
             current[lid] = payload["data"]
         else:

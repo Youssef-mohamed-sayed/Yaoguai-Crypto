@@ -11,12 +11,50 @@ const API_BASE_URL = window.CRYPTO_API_BASE || window.location.origin;
 const JWT_STORAGE_KEY = "yaoguai_jwt";
 const USER_STORAGE_KEY = "yaoguai_user";
 
-function getAuthToken() {
+function readAuthToken() {
   try { return localStorage.getItem(JWT_STORAGE_KEY) || ""; }
   catch (_) { return ""; }
 }
 
+let activeToken = readAuthToken();
+let authRevision = 0;
+let progressSaveQueue = Promise.resolve();
+
+function getAuthToken() {
+  // A different tab may have switched accounts before its storage event runs.
+  return activeToken === readAuthToken() ? activeToken : "";
+}
+
+function sessionChangedError() {
+  const error = new Error("Your session changed. Please try again.");
+  error.code = "SESSION_CHANGED";
+  return error;
+}
+
+function clearAccountCache() {
+  for (const storage of [localStorage, window.sessionStorage]) {
+    if (!storage) continue;
+    try {
+      for (let i = storage.length - 1; i >= 0; i--) {
+        const key = storage.key(i);
+        if (key && (key.startsWith("yaoguai:progress:") || key.startsWith("yaoguai:tool:")
+            || key === "yaoguai_hashescom_key")) storage.removeItem(key);
+      }
+    } catch (_) {}
+  }
+}
+
+function installSession(res) {
+  if (!res || !res.token || !res.user || !res.user.id) throw new Error("Invalid login response. Please try again.");
+  clearAccountCache();
+  setAuthToken(res.token);
+  setStoredUser(res.user);
+  if (window.Progress) window.Progress.syncFromServer(res.user.progress || {}, res.user.id);
+}
+
 function setAuthToken(token) {
+  activeToken = token || "";
+  authRevision++;
   try {
     if (token) localStorage.setItem(JWT_STORAGE_KEY, token);
     else localStorage.removeItem(JWT_STORAGE_KEY);
@@ -24,15 +62,17 @@ function setAuthToken(token) {
 }
 
 function getStoredUser() {
+  if (!getAuthToken()) return null;
   try {
     const raw = localStorage.getItem(USER_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    const record = raw ? JSON.parse(raw) : null;
+    return record && record.token === getAuthToken() ? record.user : null;
   } catch (_) { return null; }
 }
 
 function setStoredUser(user) {
   try {
-    if (user) localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
+    if (user) localStorage.setItem(USER_STORAGE_KEY, JSON.stringify({ token: getAuthToken(), user }));
     else localStorage.removeItem(USER_STORAGE_KEY);
   } catch (_) {}
 }
@@ -197,17 +237,16 @@ const CryptoAPI = {
     setUser: setStoredUser,
     isLoggedIn: () => Boolean(getAuthToken()),
     login: async (username, password) => {
+      const revision = ++authRevision;
+      const previousToken = getAuthToken();
       const res = await apiPost("/api/auth/login", { username, password });
-      if (res && res.token) {
-        setAuthToken(res.token);
-        setStoredUser(res.user);
-        if (window.Progress && res.user && res.user.progress) {
-          window.Progress.syncFromServer(res.user.progress);
-        }
-      }
+      if (revision !== authRevision || previousToken !== getAuthToken()) throw sessionChangedError();
+      installSession(res);
       return res;
     },
     register: async (username, password, avatarFile) => {
+      const revision = ++authRevision;
+      const previousToken = getAuthToken();
       let res;
       if (avatarFile) {
         const fd = new FormData();
@@ -218,30 +257,47 @@ const CryptoAPI = {
       } else {
         res = await apiPost("/api/auth/register", { username, password });
       }
-      if (res && res.token) {
-        setAuthToken(res.token);
-        setStoredUser(res.user);
-      }
+      if (revision !== authRevision || previousToken !== getAuthToken()) throw sessionChangedError();
+      installSession(res);
       return res;
     },
     me: async () => {
-      const res = await apiGet("/api/auth/me");
-      if (res && res.user) {
-        setStoredUser(res.user);
-        if (window.Progress && res.user.progress) {
-          window.Progress.syncFromServer(res.user.progress);
+      const token = getAuthToken();
+      const previousUser = getStoredUser();
+      try {
+        const res = await apiGet("/api/auth/me");
+        if (!token || token !== getAuthToken()) throw sessionChangedError();
+        if (res && res.user) {
+          setStoredUser(res.user);
+          if (!previousUser && window.Progress) window.Progress.loadFromServer();
         }
+        return res;
+      } catch (error) {
+        if (token !== getAuthToken()) throw sessionChangedError();
+        throw error;
       }
-      return res;
     },
     logout: () => {
+      const token = getAuthToken();
+      // Capture the old token for revocation, then clear the browser immediately.
       setAuthToken("");
       setStoredUser(null);
+      clearAccountCache();
+      if (window.Progress) window.Progress.reset();
+      if (!token) return Promise.resolve();
+      return fetchWithErrors(API_BASE_URL + "/api/auth/logout", {
+        method: "POST", headers: { Authorization: `Bearer ${token}` },
+        keepalive: true,
+      }).then(res => {
+        if (!res.ok && res.status !== 401) throw responseError(res, null);
+      });
     },
     updateAvatar: async (avatarFile) => {
+      const token = getAuthToken();
       const fd = new FormData();
       fd.append("avatar", avatarFile);
       const res = await apiFetch("/api/auth/avatar", fd, false);
+      if (!token || token !== getAuthToken()) throw sessionChangedError();
       const user = getStoredUser();
       if (user && res && res.avatar_url) {
         user.avatar_url = res.avatar_url;
@@ -253,10 +309,30 @@ const CryptoAPI = {
       return apiGet("/api/user/progress");
     },
     saveProgress: async (progressObj) => {
-      return apiPost("/api/user/progress", { progress: progressObj });
+      const token = getAuthToken();
+      const snapshot = JSON.parse(JSON.stringify(progressObj));
+      const save = progressSaveQueue.catch(() => {}).then(() => {
+        if (!token || token !== getAuthToken()) throw sessionChangedError();
+        return apiPost("/api/user/progress", { progress: snapshot });
+      });
+      progressSaveQueue = save;
+      return save;
     },
   },
 };
 
 window.CryptoAPI = CryptoAPI;
 window.API_BASE_URL = API_BASE_URL;
+
+// Account changes in another tab invalidate this page's form and lesson state.
+if (window.addEventListener) {
+  window.addEventListener("storage", event => {
+    if ((event.key === JWT_STORAGE_KEY || event.key === null) && activeToken !== readAuthToken()) {
+      authRevision++;
+      window.location.replace("/");
+    }
+  });
+  window.addEventListener("pageshow", event => {
+    if (event.persisted) window.location.reload();
+  });
+}

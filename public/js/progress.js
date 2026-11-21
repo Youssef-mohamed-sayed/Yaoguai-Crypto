@@ -4,15 +4,35 @@
    syncs with the YAOGUAI backend database for logged-in users.
    ============================================================ */
 
-const PROGRESS_KEY = "yaoguai:progress:v1";
+const LEGACY_PROGRESS_KEY = "yaoguai:progress:v1";
+let progressRevision = 0;
+
+function progressOwner() {
+  const auth = window.CryptoAPI && window.CryptoAPI.auth;
+  const user = auth && auth.isLoggedIn() && auth.getUser();
+  return user && user.id ? String(user.id) : null;
+}
+
+function progressKey() {
+  const owner = progressOwner();
+  return owner ? `yaoguai:progress:v2:${owner}` : null;
+}
+
+// The shared legacy cache has no trustworthy owner and must never be imported.
+try { localStorage.removeItem(LEGACY_PROGRESS_KEY); } catch (_) {}
 
 function getStore() {
-  try { return JSON.parse(localStorage.getItem(PROGRESS_KEY)) || {}; }
+  const key = progressKey();
+  if (!key) return {};
+  try { return JSON.parse(localStorage.getItem(key)) || {}; }
   catch (e) { return {}; }
 }
 
 function setStore(obj) {
-  try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(obj)); } catch (_) {}
+  const key = progressKey();
+  if (!key) return;
+  progressRevision++;
+  try { localStorage.setItem(key, JSON.stringify(obj)); } catch (_) {}
   // Sync to server if authenticated
   if (window.CryptoAPI && window.CryptoAPI.auth && window.CryptoAPI.auth.isLoggedIn()) {
     window.CryptoAPI.auth.saveProgress(obj).catch(() => {});
@@ -60,25 +80,35 @@ const Progress = {
     const done = allIds.filter((id) => (store[id] || {}).status === "done").length;
     return { done, total: allIds.length };
   },
-  syncFromServer(serverProgress) {
-    if (!serverProgress || typeof serverProgress !== "object") return;
-    const store = getStore();
-    const merged = Object.assign({}, store, serverProgress);
-    try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(merged)); } catch (_) {}
-    window.dispatchEvent(new CustomEvent("yaoguai:progress-synced", { detail: merged }));
+  syncFromServer(serverProgress, userId) {
+    if (!progressOwner() || String(userId) !== progressOwner()) return;
+    if (!serverProgress || typeof serverProgress !== "object" || Array.isArray(serverProgress)) return;
+    // Replace, never merge account data with an unidentified browser cache.
+    try { localStorage.setItem(progressKey(), JSON.stringify(serverProgress)); } catch (_) {}
+    window.dispatchEvent(new CustomEvent("yaoguai:progress-synced"));
   },
   async loadFromServer() {
-    if (window.CryptoAPI && window.CryptoAPI.auth && window.CryptoAPI.auth.isLoggedIn()) {
-      try {
-        const res = await window.CryptoAPI.auth.getProgress();
-        if (res && res.progress) {
-          this.syncFromServer(res.progress);
-        }
-      } catch (_) {}
-    }
+    const owner = progressOwner();
+    if (!owner) return;
+    const token = window.CryptoAPI.auth.getToken();
+    const revision = progressRevision;
+    try {
+      const res = await window.CryptoAPI.auth.getProgress();
+      if (res && res.progress && owner === progressOwner()
+          && token === window.CryptoAPI.auth.getToken() && revision === progressRevision) {
+        this.syncFromServer(res.progress, owner);
+      }
+    } catch (_) {}
   },
   reset() {
-    try { localStorage.removeItem(PROGRESS_KEY); } catch (_) {}
+    progressRevision++;
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("yaoguai:progress:")) localStorage.removeItem(key);
+      }
+    } catch (_) {}
+    window.dispatchEvent(new CustomEvent("yaoguai:progress-synced"));
   },
 };
 

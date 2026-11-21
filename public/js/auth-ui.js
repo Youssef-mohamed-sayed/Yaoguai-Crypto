@@ -50,7 +50,8 @@
           if (err.status !== 401) return;
           // If token expired or invalid, log out cleanly
           if (window.CryptoAPI && window.CryptoAPI.auth) {
-            window.CryptoAPI.auth.logout();
+            window.CryptoAPI.auth.logout().catch(() => {});
+            this.resetSessionUI();
             this.renderTopbar();
             this.checkLessonGuestBanner();
           }
@@ -523,7 +524,9 @@
         msgEl.style.display = "block";
         msgEl.className = "auth-msg success";
         msgEl.textContent = "Login successful! Welcome back.";
+        const sessionToken = window.CryptoAPI.auth.getToken();
         setTimeout(() => {
+          if (!sessionToken || sessionToken !== window.CryptoAPI.auth.getToken()) return;
           this.closeModal();
           this.renderTopbar();
           this.checkLessonGuestBanner();
@@ -576,7 +579,9 @@
         msgEl.style.display = "block";
         msgEl.className = "auth-msg success";
         msgEl.textContent = "Account created successfully! Welcome to YAOGUAI.";
+        const sessionToken = window.CryptoAPI.auth.getToken();
         setTimeout(() => {
+          if (!sessionToken || sessionToken !== window.CryptoAPI.auth.getToken()) return;
           this.closeModal();
           this.renderTopbar();
           this.checkLessonGuestBanner();
@@ -636,16 +641,40 @@
       }
     },
 
-    handleLogout() {
-      if (window.CryptoAPI && window.CryptoAPI.auth) {
-        window.CryptoAPI.auth.logout();
+    resetSessionUI() {
+      ["auth-form-login", "auth-form-register"].forEach(id => {
+        const form = document.getElementById(id);
+        if (form) form.reset();
+      });
+      ["profile-avatar-img", "reg-avatar-preview"].forEach(id => {
+        const image = document.getElementById(id);
+        if (image) image.src = DEFAULT_AVATAR;
+      });
+      const username = document.getElementById("profile-username-val");
+      const stats = document.getElementById("profile-progress-stat");
+      if (username) username.textContent = "";
+      if (stats) stats.textContent = "";
+      const complete = document.getElementById("complete-btn");
+      if (complete) {
+        complete.disabled = false;
+        complete.textContent = "Mark lesson complete";
       }
+      this.switchTab("login");
+    },
+
+    async handleLogout() {
+      const request = window.CryptoAPI.auth.logout();
       this.closeModal();
+      this.resetSessionUI();
       this.renderTopbar();
       this.checkLessonGuestBanner();
-      if (typeof bootTopbarChip === "function") bootTopbarChip();
-      if (typeof updateProgressUI === "function") updateProgressUI();
-      if (typeof renderDashboard === "function") renderDashboard();
+      try {
+        await request;
+      } catch (_) {
+        // Local logout still completes when the network is unavailable.
+      } finally {
+        window.location.replace("/");
+      }
     },
 
     loadProfileData() {
