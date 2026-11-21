@@ -51,7 +51,7 @@
 
     <section class="lsec" id="intro" data-title="Introduction">
       <h2><span class="mk"></span>Introduction</h2>
-      <p>Every CTF challenge in this course so far that ended with "crack this hash" quietly assumed you'd write a small Python loop over a wordlist. This final module makes that process explicit and names the real tools professionals and CTF players actually use: <strong>John the Ripper</strong> and <strong>Hashcat</strong>, plus the wordlists and lookup services (like CrackStation) that make cracking fast at scale. This closes the course by tying every hashing lesson together into one practical skill.</p>
+      <p>Every CTF challenge in this course so far that ended with "crack this hash" quietly assumed you'd write a small Python loop over a wordlist. This final module makes that process explicit and names the real tools professionals and CTF players actually use: <strong>John the Ripper</strong> and <strong>Hashcat</strong>, plus the wordlists and lookup services (like Hashes.com) that make cracking fast at scale. This closes the course by tying every hashing lesson together into one practical skill.</p>
     </section>
 
     <section class="lsec" id="history" data-title="History">
@@ -69,7 +69,7 @@
         <tr><td>Wordlist / dictionary</td><td>Human-chosen passwords</td><td>Fast — only as many guesses as the list has</td></tr>
         <tr><td>Rule-based (mutate wordlist entries)</td><td>Passwords close to a dictionary word</td><td>Moderate</td></tr>
         <tr><td>Brute force</td><td>Short or random strings</td><td>Explodes exponentially with length</td></tr>
-        <tr><td>Precomputed lookup (rainbow table / CrackStation)</td><td>Unsalted common hashes</td><td>Instant, if the hash was precomputed</td></tr>
+        <tr><td>Precomputed lookup (rainbow table / Hashes.com)</td><td>Unsalted common hashes</td><td>Instant, if the hash was precomputed</td></tr>
       </table>
     </section>
 
@@ -93,7 +93,7 @@
 
     <section class="lsec" id="python" data-title="Cracking via the API">
       <h2><span class="mk"></span>Cracking in this project</h2>
-      <span class="code-label">crack.py / crackstation.py</span>
+      <span class="code-label">crack.py / hashescom.py</span>
       <pre class="code"><span class="kw">def</span> crack_with_john(hash_value: str, hash_type: str = <span class="str">"md5"</span>, wordlist: str = <span class="kw">None</span>):
     <span class="cmt"># shells out to the real `john` binary with the given hash + wordlist</span>
     ...
@@ -102,14 +102,15 @@
     <span class="cmt"># shells out to the real `hashcat` binary, GPU-accelerated</span>
     ...
 
-<span class="kw">def</span> crackstation_lookup(hash_value: str):
-    <span class="cmt"># queries CrackStation's own precomputed hash lookup database</span>
+<span class="kw">def</span> hashescom_lookup(hash_value: str, api_key: str):
+    <span class="cmt"># queries Hashes.com's real, documented API (hashes.com/en/api) --</span>
+    <span class="cmt"># a crowd-sourced database of hashes already cracked by other users</span>
     ...</pre>
       <p>Unlike every other module in this course, these three functions don't reimplement anything from scratch — they wrap real, external, purpose-built tools (<code>john</code>, <code>hashcat</code> binaries) or an external lookup service, because cracking performance depends entirely on tool maturity and, for Hashcat, actual GPU hardware — nothing a from-scratch Python reimplementation could compete with.</p>
       <div class="task">
         <div class="task-head"><b>TASK 02</b><span class="task-type">predict output</span></div>
         <div class="task-body">
-          <p>If you call <code>crackstation_lookup(hash)</code> for a hash that was never leaked anywhere, what would you expect?</p>
+          <p>If you call <code>hashescom_lookup(hash, api_key)</code> for a hash that was never leaked anywhere, what would you expect?</p>
           <div class="mc-opts">
             <div class="mc-opt" data-id="a" onclick="pickMC(this,'b')">It will always find it eventually, given enough time</div>
             <div class="mc-opt" data-id="b" onclick="pickMC(this,'b')">No match — lookup services only find hashes of passwords already in their precomputed database</div>
@@ -146,7 +147,7 @@
     <section class="lsec" id="weaknesses" data-title="Weaknesses / limits of cracking"> 
       <h2><span class="mk"></span>Weaknesses — limits of these techniques</h2>
       <div class="callout warn"><p><strong>Implementation-dependent, not algorithm-dependent:</strong> these tools succeed or fail based entirely on the <em>target's</em> implementation choices (fast vs. slow hash, salted vs. unsalted, predictable vs. random password) — not on any flaw in John/Hashcat themselves. A well-configured bcrypt setup with genuinely random passwords can make all of this impractically slow, which is the intended, correct outcome.</p></div>
-      <p>Lookup-table services like CrackStation only ever "know" hashes someone has already computed and indexed — they provide zero uplift against a hash of a password that's never appeared in a known breach or wordlist.</p>
+      <p>Lookup-table services like Hashes.com only ever "know" hashes someone has already computed and indexed — they provide zero uplift against a hash of a password that's never appeared in a known breach or wordlist.</p>
     </section>
 
     <section class="lsec" id="ctf-perspective" data-title="Why this matters for cybersecurity">
@@ -199,7 +200,7 @@ hex_digest = base64_decode(b64)   <span class="cmt"># "5f4dcc3b5aa765d61d8327deb
       <h2><span class="mk"></span>Summary</h2>
       <ul>
         <li>Cracking is guessing-and-checking at scale — John the Ripper and Hashcat automate exactly the loop you wrote by hand in earlier CTF challenges.</li>
-        <li>Lookup services (CrackStation) only find hashes already in a precomputed database — no uplift beyond that.</li>
+        <li>Lookup services (Hashes.com) only find hashes already in a precomputed database — no uplift beyond that.</li>
         <li>Cracking speed is dominated by the target's hash choice and the password's predictability, not by which cracking tool you use.</li>
         <li>This closes the course: encoding (representation) → encryption (confidentiality, symmetric then asymmetric) → hashing (integrity, then passwords) → cracking (what happens when any of the above is misconfigured).</li>
       </ul>

@@ -7,19 +7,24 @@ starts the Flask REST API (encoding, encryption, hashing, cracking) AND
 serves the front-end website from the same server, then opens it in your
 browser at http://127.0.0.1:5000/.  All API routes accept and return JSON.
 """
+import base64
 import binascii
+import io
 import os
 import threading
 import webbrowser
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, send_file
+from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 
 import encoding
 import encryption
 import decryption
 import hashing
 import crack
-import crackstation
+import hashescom
+from rsa_core import rsa_encrypt_int, rsa_decrypt_int
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", 5000))
@@ -28,19 +33,21 @@ PORT = int(os.environ.get("PORT", 5000))
 SITE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "public"))
 
 app = Flask(__name__, static_folder=None)
+app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MB upload limit
 
 
-# john / hashcat / CrackStation need external tools or outbound access, so they
-# are switched off when hosted on Vercel.
+# john/hashcat need external binaries that a hosted deployment won't have,
+# so they're switched off when hosted on Vercel. /api/crack/wordlist is pure
+# Python (no subprocess, no network) and stays available either way.
 HOSTED = bool(os.environ.get("VERCEL"))
-CRACK_PATHS = ("/api/crack/", "/api/crackstation")
+CRACK_PATHS = ("/api/crack/john", "/api/crack/hashcat")
 
 
 @app.before_request
 def block_cracking_when_hosted():
     if HOSTED and request.path.startswith(CRACK_PATHS):
         return jsonify({"success": False,
-                        "error": "Cracking tools are disabled on the hosted version."}), 403
+                        "error": "This cracking tool needs a local program that isn't available on the hosted version."}), 403
 
 
 @app.after_request
@@ -95,6 +102,11 @@ def require(data, *fields):
     missing = [f for f in fields if f not in data or data[f] in (None, "")]
     if missing:
         raise ValueError(f"Missing required field(s): {', '.join(missing)}")
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def file_too_large(e):
+    return err("File too large (max 1 MB).", 413)
 
 
 @app.errorhandler(404)
@@ -379,6 +391,18 @@ def bcrypt_verify_route():
 
 
 # ------------------------------------------------------------------- CRACK
+@app.route("/api/crack/wordlist", methods=["POST"])
+def crack_wordlist_route():
+    data = get_json()
+    try:
+        require(data, "hash")
+        result = crack.crack_with_wordlist(
+            data["hash"], data.get("hash_type", "md5"), data.get("wordlist"))
+        return jsonify(result)
+    except ValueError as e:
+        return err(str(e))
+
+
 @app.route("/api/crack/john", methods=["POST"])
 def crack_john_route():
     data = get_json()
@@ -403,15 +427,186 @@ def crack_hashcat_route():
         return err(str(e))
 
 
-@app.route("/api/crackstation", methods=["POST"])
-def crackstation_route():
+@app.route("/api/hashescom", methods=["POST"])
+def hashescom_route():
     data = get_json()
     try:
-        require(data, "hash")
-        result = crackstation.crackstation_lookup(data["hash"])
+        require(data, "hash", "api_key")
+        result = hashescom.hashescom_lookup(data["hash"], data["api_key"])
         return jsonify(result)
     except ValueError as e:
         return err(str(e))
+
+
+@app.route("/api/hashescom/identify", methods=["POST"])
+def hashescom_identify_route():
+    data = get_json()
+    try:
+        require(data, "hash")
+        extended = str(data.get("extended", "false")).lower() in ("true", "1", "yes")
+        result = hashescom.hashescom_identify(data["hash"], extended=extended)
+        return jsonify(result)
+    except ValueError as e:
+        return err(str(e))
+
+
+# ---------------------------------------------------- FILE ENCRYPT / DECRYPT
+@app.route("/api/file/encrypt/des", methods=["POST"])
+def file_encrypt_des_route():
+    if "file" not in request.files:
+        return err("No file uploaded.")
+    file = request.files["file"]
+    if not file or not file.filename:
+        return err("No file selected.")
+
+    orig_name = secure_filename(file.filename)
+    if not orig_name.lower().endswith(".txt"):
+        return err("Only .txt files are supported.")
+
+    key = request.form.get("key", "").strip()
+    if not key:
+        return err("Key is required.")
+
+    raw_bytes = file.read()
+    if not raw_bytes:
+        return err("Uploaded file is empty.")
+
+    try:
+        encrypted = encryption.des_encrypt_file_bytes(raw_bytes, key)
+    except Exception as e:
+        return err(f"Encryption failed: {e}")
+
+    download_name = f"{orig_name}.des.enc"
+    return send_file(
+        io.BytesIO(encrypted),
+        as_attachment=True,
+        download_name=download_name,
+        mimetype="application/octet-stream"
+    )
+
+
+@app.route("/api/file/decrypt/des", methods=["POST"])
+def file_decrypt_des_route():
+    if "file" not in request.files:
+        return err("No file uploaded.")
+    file = request.files["file"]
+    if not file or not file.filename:
+        return err("No file selected.")
+
+    key = request.form.get("key", "").strip()
+    if not key:
+        return err("Key is required.")
+
+    orig_name = request.form.get("original_filename", "").strip()
+    if not orig_name:
+        upl_name = secure_filename(file.filename)
+        if upl_name.endswith(".des.enc"):
+            orig_name = upl_name[:-8]
+        elif upl_name.endswith(".enc"):
+            orig_name = upl_name[:-4]
+        else:
+            orig_name = "decrypted.txt"
+    else:
+        orig_name = secure_filename(orig_name)
+
+    raw_bytes = file.read()
+    if not raw_bytes:
+        return err("Uploaded file is empty.")
+
+    try:
+        plain = encryption.des_decrypt_file_bytes(raw_bytes, key)
+    except Exception as e:
+        return err(f"Decryption failed: {e}")
+
+    return send_file(
+        io.BytesIO(plain),
+        as_attachment=True,
+        download_name=orig_name,
+        mimetype="application/octet-stream"
+    )
+
+
+@app.route("/api/file/encrypt/hybrid", methods=["POST"])
+def file_encrypt_hybrid_route():
+    if "file" not in request.files:
+        return err("No file uploaded.")
+    file = request.files["file"]
+    if not file or not file.filename:
+        return err("No file selected.")
+
+    orig_name = secure_filename(file.filename)
+    if not orig_name.lower().endswith(".txt"):
+        return err("Only .txt files are supported.")
+
+    raw_bytes = file.read()
+    if not raw_bytes:
+        return err("Uploaded file is empty.")
+
+    try:
+        e = int(str(request.form.get("e", "")).strip())
+        n = int(str(request.form.get("n", "")).strip())
+    except (ValueError, TypeError):
+        return err("Valid RSA public key (e and n integers) is required.")
+
+    if n <= 2**64:
+        return err("RSA key too small to wrap an 8-byte session key. Generate at least a 128-bit key pair.")
+
+    try:
+        session_key_bytes = os.urandom(8)
+        encrypted_file = encryption.des_encrypt_file_bytes(raw_bytes, session_key_bytes.hex())
+        session_key_int = int.from_bytes(session_key_bytes, "big")
+        encrypted_key = rsa_encrypt_int(session_key_int, e, n)
+    except Exception as exc:
+        return err(f"Hybrid encryption failed: {exc}")
+
+    return ok({
+        "encrypted_file_b64": base64.b64encode(encrypted_file).decode("ascii"),
+        "encrypted_key": str(encrypted_key),
+        "original_filename": orig_name
+    })
+
+
+@app.route("/api/file/decrypt/hybrid", methods=["POST"])
+def file_decrypt_hybrid_route():
+    data = request.get_json(silent=True) or {}
+    if not data and request.form:
+        data = request.form.to_dict()
+        if "file" in request.files:
+            file_bytes = request.files["file"].read()
+            try:
+                file_str = file_bytes.decode("ascii").strip()
+                base64.b64decode(file_str, validate=True)
+                data["encrypted_file_b64"] = file_str
+            except Exception:
+                data["encrypted_file_b64"] = base64.b64encode(file_bytes).decode("ascii")
+
+    try:
+        require(data, "encrypted_key", "d", "n")
+        if "encrypted_file_b64" not in data or not data["encrypted_file_b64"]:
+            return err("Encrypted file payload is required.")
+        d_int = int(str(data["d"]).strip())
+        n_int = int(str(data["n"]).strip())
+        enc_key_int = int(str(data["encrypted_key"]).strip())
+    except (ValueError, TypeError) as e:
+        return err(f"Invalid RSA parameters: {e}")
+
+    try:
+        session_key_int = rsa_decrypt_int(enc_key_int, d_int, n_int)
+        session_key_bytes = session_key_int.to_bytes(8, "big")
+        encrypted_file = base64.b64decode(data["encrypted_file_b64"])
+        plain = encryption.des_decrypt_file_bytes(encrypted_file, session_key_bytes.hex())
+    except Exception as e:
+        return err(f"Hybrid decryption failed: {e}")
+
+    orig_name = secure_filename(str(data.get("original_filename") or "decrypted.txt").strip())
+    if not orig_name:
+        orig_name = "decrypted.txt"
+    return send_file(
+        io.BytesIO(plain),
+        as_attachment=True,
+        download_name=orig_name,
+        mimetype="application/octet-stream"
+    )
 
 
 if __name__ == "__main__":

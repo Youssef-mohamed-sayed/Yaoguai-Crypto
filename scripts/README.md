@@ -29,7 +29,7 @@ consumed by a front-end web app.
 | Cracking | John the Ripper | Requested explicitly | Yes - subprocess wrapper, `crack.py` |
 | Cracking | Hashcat | Requested explicitly | Yes - subprocess wrapper, `crack.py` |
 | Cracking | RockYou wordlist | Requested explicitly | Yes - default wordlist path, `rockyou.txt` (placeholder included - replace with the real file) |
-| Cracking | CrackStation | Requested explicitly | Yes, but unofficial - see note below |
+| Cracking | Hashes.com lookup | Requested explicitly | Yes - real documented API, `hashescom.py` |
 
 **Why bcrypt isn't manually implemented:** bcrypt's security comes from its
 expensive, Blowfish-derived key schedule (`EksBlowfishSetup`) run many times
@@ -40,12 +40,16 @@ pitfalls (e.g. getting the Blowfish P/S-box initialization or the OpenBSD
 `bcrypt` Python package instead and documents that choice rather than
 presenting a toy version as production-safe.
 
-**Why CrackStation isn't a true "integration":** crackstation.net has no
-published public REST API. `crackstation.py` submits to their public web
-form and does a minimal, defensive scrape of the HTML response. This is
-explicitly unofficial, may break at any time if the site's HTML changes,
-and is rate-limit/anti-bot fragile. The target URL is configurable via the
-`CRACKSTATION_URL` environment variable.
+**Why Hashes.com instead of CrackStation:** CrackStation's public form is
+gated behind a Google reCAPTCHA that only a human in a browser can solve,
+so no automated request - including one made by this app's own backend -
+can ever succeed against it (confirmed against CrackStation's own published
+source). Hashes.com, by contrast, publishes a real, documented API
+(https://hashes.com/en/api) that takes a plain POST request and returns
+JSON, no captcha involved, so it actually works when called from a
+backend. It does require a free Hashes.com account and an API key, which
+the person pastes into the Tools page themselves (never hardcoded here) -
+see `hashescom.py`.
 
 ## B. Project structure
 
@@ -58,7 +62,7 @@ API/
 ├── decryption.py        # decrypt functions for every cipher
 ├── hashing.py           # md5/sha1/sha256 (manual) + bcrypt (library)
 ├── crack.py             # John the Ripper / Hashcat subprocess wrappers
-├── crackstation.py       # unofficial CrackStation web-form integration
+├── hashescom.py          # Hashes.com API integration (crowd-sourced "already cracked" lookup)
 ├── des_core.py          # manual DES (verified against FIPS 46-3 test vector)
 ├── aes_core.py           # manual AES-128 (verified against FIPS-197 test vector)
 ├── stream_core.py        # manual XOR and RC4
@@ -167,7 +171,7 @@ convenience, not a secure key-derivation function.
 |---|---|---|
 | POST | `/api/crack/john` | `{"hash": "5d41...", "hash_type": "md5", "wordlist": "/optional/path"}` |
 | POST | `/api/crack/hashcat` | same shape |
-| POST | `/api/crackstation` | `{"hash": "5d41..."}` |
+| POST | `/api/hashescom` | `{"hash": "5d41...", "api_key": "..."}` |
 
 ## F. curl examples
 

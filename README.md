@@ -17,7 +17,7 @@ This serves the website and the API together and opens http://127.0.0.1:5000/.
 1. Push this repository to GitHub.
 2. On vercel.com choose **Add New → Project**, import the repo and click **Deploy**. No settings or API keys are needed.
 
-`vercel.json` sends every request to `api/index.py`, which serves the pages from `public/` and the JSON API under `/api/`. The john, hashcat and CrackStation endpoints are disabled on the hosted version.
+`vercel.json` sends every request to `api/index.py`, which serves the pages from `public/` and the JSON API under `/api/`. The john and hashcat endpoints need local binaries and are disabled on the hosted version; the sample-wordlist cracker and the Hashes.com lookup are pure HTTP/Python and work everywhere.
 
 ## Project structure
 

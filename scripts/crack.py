@@ -8,8 +8,40 @@ import shutil
 import subprocess
 import tempfile
 
+from hashing import md5_hash, sha1_hash, sha256_hash
+
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROCKYOU_PATH = os.path.join(PROJECT_DIR, "rockyou.txt")
+
+# pure-Python dictionary attack: no external tool needed, so it always works,
+# including on a hosted deployment with no john/hashcat installed.
+WORDLIST_HASHERS = {
+    "md5": md5_hash,
+    "sha1": sha1_hash,
+    "sha256": sha256_hash,
+}
+
+
+def crack_with_wordlist(hash_value: str, hash_type: str = "md5", wordlist: str = None):
+    hasher = WORDLIST_HASHERS.get(hash_type.lower())
+    if hasher is None:
+        return {"success": False, "error": f"Unsupported hash_type: {hash_type}. Use md5, sha1 or sha256."}
+
+    wordlist_path = wordlist or ROCKYOU_PATH
+    if not os.path.isfile(wordlist_path):
+        return {"success": False, "error": f"Wordlist not found: {wordlist_path}"}
+
+    target = hash_value.strip().lower()
+    tried = 0
+    with open(wordlist_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            word = line.rstrip("\n").rstrip("\r")
+            if not word:
+                continue
+            tried += 1
+            if hasher(word) == target:
+                return {"success": True, "cracked": True, "password": word, "tried": tried}
+    return {"success": True, "cracked": False, "password": None, "tried": tried}
 
 # maps a user-facing hash type name to the hashcat mode number
 HASHCAT_MODES = {

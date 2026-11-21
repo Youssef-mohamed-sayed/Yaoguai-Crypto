@@ -38,6 +38,21 @@ def des_encrypt(data: str, key: str) -> str:
     return _b64(des_encrypt_bytes(data.encode("utf-8"), key8))
 
 
+def des_encrypt_file_bytes(data: bytes, key: str) -> bytes:
+    """Encrypt raw bytes with DES; return raw encrypted bytes. Used by file routes."""
+    key8 = _normalize_key(key, 8)
+    return des_encrypt_bytes(data, key8)
+
+
+def des_decrypt_file_bytes(data: bytes, key: str) -> bytes:
+    """Decrypt raw DES-encrypted bytes; return raw plaintext bytes. Used by file routes."""
+    if not data or len(data) % 8 != 0:
+        raise ValueError("Malformed ciphertext: file length must be a non-zero multiple of 8 bytes.")
+    from des_core import des_decrypt_bytes as _dec
+    key8 = _normalize_key(key, 8)
+    return _dec(data, key8)
+
+
 def triple_des_encrypt(data: str, key1: str, key2: str, key3: str = None) -> str:
     """EDE3: encrypt with key1, decrypt with key2, encrypt with key3.
     If key3 is not given, key1 is reused (EDE2, common in legacy systems)."""
