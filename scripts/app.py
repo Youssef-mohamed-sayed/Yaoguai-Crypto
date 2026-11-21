@@ -81,6 +81,11 @@ def site_favicon():
 
 @app.route("/<any(lessons, js, assets):folder>/<path:filename>")
 def site_files(folder, filename):
+    # On Vercel (read-only), avatars live in /tmp not public/; serve from there
+    if folder == "assets" and filename.startswith("avatars/"):
+        avatar_name = filename[len("avatars/"):]
+        if auth.is_read_only:
+            return send_from_directory(auth.AVATARS_DIR, avatar_name)
     return send_from_directory(os.path.join(SITE_ROOT, folder), filename)
 
 
