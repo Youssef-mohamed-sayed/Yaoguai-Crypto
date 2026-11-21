@@ -5,7 +5,8 @@
    hashing -> cracking/CTF. Every topic found in the slides is
    listed, even ones without a fully written lesson yet
    (implemented:false) — the dashboard shows these as "drafting"
-   rather than silently dropping them.
+   rather than silently dropping them. All 16 are implemented as of
+   this revision; the flag stays in place for any future addition.
    ============================================================ */
 
 const COURSE = [
@@ -18,10 +19,10 @@ const COURSE = [
     implemented:true },
   { id:"ascii", order:3, category:"encoding", title:"ASCII", native:"文字符号",
     difficulty:"Beginner", summary:"The map from the letters you type to the numbers a computer actually stores.",
-    implemented:false },
+    implemented:true },
   { id:"url", order:4, category:"encoding", title:"URL Encoding", native:"百分符号化",
     difficulty:"Easy", summary:"Why spaces become %20 — escaping characters a URL isn't allowed to carry raw.",
-    implemented:false },
+    implemented:true },
 
   // ---------------- ENCRYPTION (symmetric -> asymmetric) ----------------
   { id:"xor", order:5, category:"encryption", title:"XOR Cipher", native:"排他的論理和",
@@ -29,22 +30,22 @@ const COURSE = [
     implemented:true },
   { id:"rc4", order:6, category:"encryption", title:"RC4", native:"流密码",
     difficulty:"Intermediate", summary:"A stream cipher that generates an XOR keystream byte-by-byte — and why it's retired.",
-    implemented:false },
+    implemented:true },
   { id:"des", order:7, category:"encryption", title:"DES", native:"旧世代暗号",
     difficulty:"Intermediate", summary:"The Feistel network that defined block ciphers for 20 years, broken by its own short key.",
-    implemented:false },
+    implemented:true },
   { id:"3des", order:8, category:"encryption", title:"Triple DES", native:"三重旧世代",
     difficulty:"Intermediate", summary:"Patching DES's key size by running it three times — a bridge, not a destination.",
-    implemented:false },
+    implemented:true },
   { id:"aes", order:9, category:"encryption", title:"AES", native:"高度暗号標準",
     difficulty:"Advanced", summary:"The block cipher securing almost everything today: state grids, S-boxes and round keys.",
     implemented:true },
   { id:"diffie-hellman", order:10, category:"encryption", title:"Diffie–Hellman", native:"鍵交換",
     difficulty:"Intermediate", summary:"How two strangers agree on a secret key in full view of an eavesdropper — no ciphertext involved.",
-    implemented:false },
+    implemented:true },
   { id:"rsa", order:11, category:"encryption", title:"RSA", native:"非対称暗号",
     difficulty:"Advanced", summary:"Public-key encryption built from the difficulty of factoring — and why padding isn't optional.",
-    implemented:false },
+    implemented:true },
 
   // ---------------- HASHING ----------------
   { id:"md5", order:12, category:"hashing", title:"MD5", native:"一方向関数",
@@ -52,16 +53,16 @@ const COURSE = [
     implemented:true },
   { id:"sha1", order:13, category:"hashing", title:"SHA-1", native:"安全な旧式ハッシュ",
     difficulty:"Easy", summary:"MD5's sturdier sibling, deprecated the same way: collisions, eventually, catch up.",
-    implemented:false },
+    implemented:true },
   { id:"sha256", order:14, category:"hashing", title:"SHA-256", native:"現行ハッシュ標準",
     difficulty:"Intermediate", summary:"The hash function behind TLS certificates, Git commits and Bitcoin blocks.",
-    implemented:false },
+    implemented:true },
   { id:"bcrypt", order:15, category:"hashing", title:"bcrypt", native:"遅延ハッシュ",
     difficulty:"Intermediate", summary:"Password hashing designed to be slow on purpose — salts, cost factors, and why speed is the enemy here.",
     implemented:true },
   { id:"cracking", order:16, category:"hashing", title:"Cracking Hashes", native:"総当たり攻撃",
     difficulty:"CTF", summary:"John the Ripper, Hashcat and wordlists — turning a leaked hash back into a password.",
-    implemented:false, extra:true },
+    implemented:true, extra:true },
 ];
 
 function courseById(id){ return COURSE.find(c => c.id === id); }
