@@ -60,6 +60,12 @@ def site_index():
     return send_from_directory(SITE_ROOT, "index.html")
 
 
+@app.route("/tools")
+@app.route("/tools.html")
+def site_tools():
+    return send_from_directory(SITE_ROOT, "tools.html")
+
+
 @app.route("/favicon.ico")
 def site_favicon():
     return send_from_directory(os.path.join(SITE_ROOT, "assets", "images"), "favicon.ico")
@@ -244,7 +250,8 @@ def rsa_generate_keys_route():
     if bits < 64 or bits > 2048 or bits % 2 != 0:
         return err("bits must be an even number between 64 and 2048 (demo-sized).")
     keys = encryption.rsa_generate_keys(bits)
-    return ok({"n": keys["n"], "e": keys["e"], "d": keys["d"]})
+    # strings, not numbers: JSON numbers this large lose precision in JavaScript
+    return ok({"n": str(keys["n"]), "e": str(keys["e"]), "d": str(keys["d"])})
 
 
 @app.route("/api/encryption/rsa", methods=["POST"])
