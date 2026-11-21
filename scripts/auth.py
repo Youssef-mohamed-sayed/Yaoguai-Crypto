@@ -10,13 +10,13 @@ import json
 import os
 import re
 import secrets
-import sqlite3
 import tempfile
 import time
 from contextlib import contextmanager
 from typing import Optional, Tuple, Dict, Any
 
 import bcrypt
+import database
 
 # Attempt to load PyJWT; if not available, stdlib HS256 fallback will be used
 try:
@@ -25,6 +25,7 @@ try:
 except ImportError:
     HAS_PYJWT = False
 
+DATABASE_URL = database.configured_url()
 JWT_SECRET = os.environ.get("YAOGUAI_JWT_SECRET")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 14
@@ -70,68 +71,27 @@ _db_initialized = False
 @contextmanager
 def get_db():
     global _db_initialized
-    conn = sqlite3.connect(DB_PATH)
+    conn = database.connect(DATABASE_URL, DB_PATH, hosted=is_read_only)
     try:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
         if not _db_initialized:
             init_db(conn)
             _db_initialized = True
-        with conn:
-            yield conn
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
 def init_db(conn=None):
-    close_when_done = False
-    if conn is None:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        close_when_done = True
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL COLLATE NOCASE,
-                password_hash TEXT NOT NULL,
-                avatar_url TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS progress (
-                user_id INTEGER PRIMARY KEY,
-                progress_json TEXT NOT NULL DEFAULT '{}',
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS auth_settings (
-                name TEXT PRIMARY KEY, value TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS auth_sessions (
-                token_id TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                expires_at INTEGER NOT NULL
-            )
-        """)
+    if conn is not None:
+        database.init_schema(conn)
         conn.commit()
-    except Exception as e:
-        print(f"[AUTH] init_db note: {e}")
-    finally:
-        if close_when_done:
-            conn.close()
-
-
-# Try initializing immediately if possible
-try:
-    init_db()
-except Exception:
-    pass
+        return
+    with get_db():
+        pass
 
 
 # ------------------------------------------------ JWT HELPERS (PyJWT + stdlib fallback)
@@ -152,9 +112,9 @@ def get_jwt_secret():
     # Never sign sessions with a publicly known default key. Persist the local
     # fallback alongside the accounts so restarts and worker processes agree.
     with get_db() as conn:
-        conn.execute("INSERT OR IGNORE INTO auth_settings (name, value) VALUES (?, ?)",
+        conn.execute("INSERT INTO auth_settings (name, value) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
                      ("jwt_secret", secrets.token_hex(32)))
-        return conn.execute("SELECT value FROM auth_settings WHERE name = 'jwt_secret'").fetchone()[0]
+        return conn.execute("SELECT value FROM auth_settings WHERE name = 'jwt_secret'").fetchone()["value"]
 
 
 def create_token(user_id: int, username: str) -> str:
@@ -261,12 +221,17 @@ def validate_avatar_file(raw_bytes: bytes, filename: str) -> Tuple[bytes, str]:
     return raw_bytes, normalized_ext
 
 
-def save_avatar_file(user_id: int, raw_bytes: bytes, ext: str) -> str:
+def save_avatar_file(user_id: int, raw_bytes: bytes, ext: str, conn) -> str:
     filename = f"avatar_{user_id}_{secrets.token_hex(16)}{ext}"
-    dest_path = os.path.join(AVATARS_DIR, filename)
-    with open(dest_path, "wb") as f:
-        f.write(raw_bytes)
+    content_type = "image/png" if ext == ".png" else "image/jpeg"
+    conn.execute("INSERT INTO avatars (filename, user_id, data, content_type) VALUES (?, ?, ?, ?)",
+                 (filename, user_id, raw_bytes, content_type))
     return f"assets/avatars/{filename}"
+
+
+def get_avatar(filename):
+    with get_db() as conn:
+        return conn.execute("SELECT data, content_type FROM avatars WHERE filename = ?", (filename,)).fetchone()
 
 
 # ------------------------------------------------ USER OPERATIONS
@@ -306,20 +271,20 @@ def register_user(username: str, password: str, avatar_bytes: Optional[bytes] = 
 
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE username = ?", (username,))
+        cur.execute("SELECT id FROM users WHERE LOWER(username) = LOWER(?)", (username,))
         if cur.fetchone():
             raise ValueError("A user with that username already exists.")
 
         cur.execute(
-            "INSERT INTO users (username, password_hash, avatar_url) VALUES (?, ?, ?)",
+            "INSERT INTO users (username, password_hash, avatar_url) VALUES (?, ?, ?) RETURNING id",
             (username, pw_hash, "")
         )
-        user_id = cur.lastrowid
+        user_id = cur.fetchone()["id"]
 
         avatar_url = ""
         if avatar_bytes is not None and avatar_filename:
             valid_bytes, ext = validate_avatar_file(avatar_bytes, avatar_filename)
-            avatar_url = save_avatar_file(user_id, valid_bytes, ext)
+            avatar_url = save_avatar_file(user_id, valid_bytes, ext, conn)
             cur.execute("UPDATE users SET avatar_url = ? WHERE id = ?", (avatar_url, user_id))
 
         conn.commit()
@@ -343,7 +308,7 @@ def login_user(username: str, password: str) -> Tuple[Dict[str, Any], str]:
 
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id, username, password_hash, avatar_url FROM users WHERE username = ?", (username,))
+        cur.execute("SELECT id, username, password_hash, avatar_url FROM users WHERE LOWER(username) = LOWER(?)", (username,))
         row = cur.fetchone()
         if not row:
             raise ValueError("Invalid username or password.")
@@ -400,8 +365,8 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
 
 def update_user_avatar(user_id: int, raw_bytes: bytes, filename: str) -> str:
     valid_bytes, ext = validate_avatar_file(raw_bytes, filename)
-    avatar_url = save_avatar_file(user_id, valid_bytes, ext)
     with get_db() as conn:
+        avatar_url = save_avatar_file(user_id, valid_bytes, ext, conn)
         conn.execute("UPDATE users SET avatar_url = ? WHERE id = ?", (avatar_url, user_id))
         conn.commit()
     return avatar_url

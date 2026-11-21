@@ -14,18 +14,65 @@ This serves the website and the API together and opens http://127.0.0.1:5000/.
 
 ## Deploy to Vercel
 
-1. Push this repository to GitHub.
-2. On vercel.com choose **Add New → Project**, import the repo and click **Deploy**. No settings or API keys are needed.
+1. Import this GitHub repository as a Vercel project.
+2. Add **Neon** from Vercel's Integrations Marketplace and connect the database to
+   this project for Production. Use a separate Neon branch/database for Preview.
+3. Confirm `DATABASE_URL` (or `POSTGRES_URL`) exists for the selected environment.
+   Use Neon's pooled URL with its SSL parameters intact. Custom prefixes require
+   mapping the prefixed value to `DATABASE_URL`.
+4. Set `YAOGUAI_JWT_SECRET` to a private random secret, or let the application
+   generate a signing key stored in the shared database. Never commit credentials.
+5. If preserving existing accounts, run the import below **before the new app
+   handles account requests**. The target must be empty.
+6. Redeploy after connecting the database or changing environment variables.
 
-`vercel.json` sends every request to `api/index.py`, which serves the pages from `public/` and the JSON API under `/api/`. The john and hashcat endpoints need local binaries and are disabled on the hosted version; the sample-wordlist cracker and the Hashes.com lookup are pure HTTP/Python and work everywhere.
+`vercel.json` sends requests to `api/index.py`; Flask serves both the pages and
+API. Accounts, progress, revocable sessions, signing settings, and uploaded avatars
+use PostgreSQL when a connection URL is configured. Tables are initialized
+transactionally on first database use. Avatars are stored in the database with
+the existing 2 MB limit. No additional file-storage service is required.
 
-Accounts, progress, and revocable sessions currently use SQLite. On Vercel these
-files live in temporary storage and are not a durable shared database: a cold
-start or another instance can lose accounts or require signing in again. Use a
-durable shared database before relying on hosted account persistence. Set
-`YAOGUAI_JWT_SECRET` to a private random secret in deployments; local runs generate
-and persist a random signing key in the database. Previously issued sessions must
-sign in again after the session-isolation update.
+Local runs without a connection URL use SQLite. Hosted authentication returns a
+clear storage-unavailable error if Neon is missing or unreachable, rather than
+creating accounts in temporary files. PostgreSQL connection failures never fall
+back to SQLite. Keep Preview separate from Production to avoid shared test data.
+
+### Import existing SQLite accounts
+
+Back up the source SQLite database and its avatar directory. Preserve account IDs
+and password hashes; passwords do not need resetting. Set `DATABASE_URL` securely
+in the shell running these commands (the application does not automatically load
+`.env` files). Start with a validation-only run:
+
+```bash
+python scripts/migrate_sqlite.py --source backup/yaoguai.db --avatars backup/avatars
+```
+
+Then import into an **empty** Neon database:
+
+```bash
+python scripts/migrate_sqlite.py --source backup/yaoguai.db --avatars backup/avatars --apply
+```
+
+The importer uses one transaction and refuses to overwrite existing account data.
+It preserves users, progress, stored signing settings, unexpired sessions, and
+avatars. It stops on missing avatars; `--skip-missing-avatars` explicitly resets
+those unavailable images to the default. A different `YAOGUAI_JWT_SECRET` requires
+users to sign in again. Data already lost from an old serverless instance's
+SQLite files cannot be recovered by this import.
+
+### Verify
+
+```bash
+python -m unittest discover -s tests -p 'test_*.py'
+node --test tests/auth-ui.test.cjs tests/session-isolation.test.cjs
+```
+
+To also run PostgreSQL integration tests, set `TEST_POSTGRES_URL` to a dedicated,
+expendable test database. **These tests truncate the application tables in that
+database. Never point this variable at Production or a database containing data.**
+Tests cover migration, username uniqueness, per-account progress and avatars,
+revoked tokens, and account-switch/logout isolation.
 
 ## Project structure
 

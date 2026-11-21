@@ -1,4 +1,5 @@
 import io
+import os
 import pathlib
 import sqlite3
 import sys
@@ -15,6 +16,7 @@ class AuthenticationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.paths = patch.multiple(auth, DB_PATH=str(pathlib.Path(self.temp.name) / "test.db"),
+                                    DATABASE_URL="", is_read_only=False,
                                     AVATARS_DIR=self.temp.name, _db_initialized=False)
         self.paths.start()
         self.client = app.app.test_client()
@@ -120,7 +122,7 @@ class AuthenticationTests(unittest.TestCase):
                     self.assertLogs(app.app.logger, level="ERROR"):
                 response = self.client.post(f"/api/auth/{endpoint}", json={
                     "username": "test_user", "password": "password123"})
-            self.assertEqual(response.status_code, 500)
+            self.assertEqual(response.status_code, 503)
             self.assertIn("try again later", response.json["error"])
             self.assertNotIn("private", response.json["error"])
 
@@ -199,7 +201,22 @@ class AuthenticationTests(unittest.TestCase):
         first = auth.update_user_avatar(user_id, auth.PNG_MAGIC + b"first", "a.png")
         second = auth.update_user_avatar(user_id, auth.PNG_MAGIC + b"second", "a.png")
         self.assertNotEqual(first, second)
-        self.assertEqual((pathlib.Path(self.temp.name) / pathlib.Path(first).name).read_bytes(), auth.PNG_MAGIC + b"first")
+        self.assertEqual(bytes(auth.get_avatar(pathlib.Path(first).name)["data"]), auth.PNG_MAGIC + b"first")
+
+
+@unittest.skipUnless(os.environ.get("TEST_POSTGRES_URL"), "Set TEST_POSTGRES_URL to an expendable PostgreSQL database")
+class PostgresAuthenticationTests(AuthenticationTests):
+    def setUp(self):
+        super().setUp()
+        auth.DATABASE_URL = os.environ["TEST_POSTGRES_URL"]
+        auth.init_db()
+        with auth.get_db() as conn:
+            conn.execute("TRUNCATE users, progress, auth_settings, auth_sessions, avatars RESTART IDENTITY CASCADE")
+
+    def tearDown(self):
+        with auth.get_db() as conn:
+            conn.execute("TRUNCATE users, progress, auth_settings, auth_sessions, avatars RESTART IDENTITY CASCADE")
+        super().tearDown()
 
 
 if __name__ == "__main__":

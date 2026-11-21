@@ -11,7 +11,6 @@ import base64
 import binascii
 import io
 import os
-import sqlite3
 import threading
 import webbrowser
 
@@ -26,6 +25,7 @@ import hashing
 import crack
 import hashescom
 import auth
+import database
 from rsa_core import rsa_encrypt_int, rsa_decrypt_int
 
 HOST = "127.0.0.1"
@@ -94,11 +94,15 @@ def site_favicon():
 
 @app.route("/<any(lessons, js, assets):folder>/<path:filename>")
 def site_files(folder, filename):
-    # On Vercel (read-only), avatars live in /tmp not public/; serve from there
+    # New uploads live in the shared database, including on serverless workers.
     if folder == "assets" and filename.startswith("avatars/"):
         avatar_name = filename[len("avatars/"):]
-        if auth.is_read_only:
+        avatar = auth.get_avatar(avatar_name)
+        if avatar:
+            return send_file(io.BytesIO(bytes(avatar["data"])), mimetype=avatar["content_type"])
+        if not auth.DATABASE_URL and not auth.is_read_only:
             return send_from_directory(auth.AVATARS_DIR, avatar_name)
+        return not_found(None)
     return send_from_directory(os.path.join(SITE_ROOT, folder), filename)
 
 
@@ -108,6 +112,15 @@ def ok(result):
 
 def err(message, status=400):
     return jsonify({"success": False, "error": message}), status
+
+
+def account_storage_unavailable(exc):
+    app.logger.error("Account database is unavailable (%s)", type(exc).__name__)
+    return err("Account storage is temporarily unavailable. Please try again later.", 503)
+
+
+for database_error in (*database.DATABASE_ERRORS, database.ConfigurationError):
+    app.register_error_handler(database_error, account_storage_unavailable)
 
 
 def get_auth_user():
@@ -937,10 +950,12 @@ def auth_register_route():
         return ok({"user": user_info, "token": token})
     except auth.ValidationError as val_err:
         return jsonify(success=False, error=str(val_err), errors=val_err.errors), 400
-    except sqlite3.IntegrityError:
+    except database.INTEGRITY_ERRORS:
         return err("A user with that username already exists.", 400)
     except ValueError as val_err:
         return err(str(val_err), 400)
+    except (*database.DATABASE_ERRORS, database.ConfigurationError) as exc:
+        return account_storage_unavailable(exc)
     except Exception as exc:
         app.logger.exception("Registration failed")
         return err("Registration is temporarily unavailable. Please try again later.", 500)
@@ -964,6 +979,8 @@ def auth_login_route():
         return jsonify(success=False, error=str(val_err), errors=val_err.errors), 400
     except ValueError as val_err:
         return err(str(val_err), 401)
+    except (*database.DATABASE_ERRORS, database.ConfigurationError) as exc:
+        return account_storage_unavailable(exc)
     except Exception as exc:
         app.logger.exception("Login failed")
         return err("Login is temporarily unavailable. Please try again later.", 500)
@@ -1017,6 +1034,8 @@ def auth_avatar_route():
         return ok({"avatar_url": avatar_url})
     except ValueError as val_err:
         return err(str(val_err), 400)
+    except (*database.DATABASE_ERRORS, database.ConfigurationError) as exc:
+        return account_storage_unavailable(exc)
     except Exception as exc:
         app.logger.exception("Avatar update failed")
         return err("Avatar upload is temporarily unavailable. Please try again later.", 500)
