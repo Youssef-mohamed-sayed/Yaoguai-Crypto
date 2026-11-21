@@ -107,6 +107,8 @@
         .auth-modal-overlay.active { display: flex; }
         .auth-modal-card {
           width: 100%; max-width: 440px;
+          max-height: calc(100dvh - 40px); overflow-y: auto;
+          overflow-wrap: anywhere;
           background: var(--ink-card);
           border: 1px solid var(--line);
           box-shadow: 0 16px 40px rgba(0, 0, 0, 0.8), 0 0 0 1px var(--red-deep);
@@ -174,7 +176,7 @@
 
         /* Avatar Picker & Preview */
         .avatar-picker-wrap {
-          display: flex; align-items: center; gap: 16px;
+          display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
           padding: 12px; background: var(--ink-raise); border: 1px solid var(--line);
         }
         .avatar-preview-box {
