@@ -11,6 +11,7 @@ import base64
 import binascii
 import io
 import os
+import sqlite3
 import threading
 import webbrowser
 
@@ -34,7 +35,17 @@ PORT = int(os.environ.get("PORT", 5000))
 SITE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "public"))
 
 app = Flask(__name__, static_folder=None)
-app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MB upload limit
+app.config["MAX_CONTENT_LENGTH"] = 3 * 1024 * 1024  # Includes multipart overhead for 2 MB avatars
+
+
+@app.before_request
+def validate_auth_request():
+    is_auth = request.path.startswith("/api/auth/")
+    if not is_auth and request.content_length and request.content_length > 1024 * 1024:
+        raise RequestEntityTooLarge()
+    if is_auth and request.method == "POST" and request.is_json:
+        if not isinstance(request.get_json(silent=True), dict):
+            return err("Request body must be a valid JSON object.", 400)
 
 
 # john/hashcat need external binaries that a hosted deployment won't have,
@@ -111,12 +122,15 @@ def get_auth_user():
         payload = auth.decode_token(token)
         user_id = int(payload.get("user_id") or payload.get("sub"))
         return auth.get_user_by_id(user_id)
-    except Exception:
-        return None
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError("Your session is invalid or has expired. Please log in again.")
 
 
 def require_auth():
-    user = get_auth_user()
+    try:
+        user = get_auth_user()
+    except ValueError as exc:
+        return None, err(str(exc), 401)
     if not user:
         return None, err("Authentication required. Please log in.", 401)
     return user, None
@@ -137,6 +151,8 @@ def require(data, *fields):
 
 @app.errorhandler(RequestEntityTooLarge)
 def file_too_large(e):
+    if request.path.startswith("/api/auth/"):
+        return err("Upload too large. Avatar files must be no more than 2 MB.", 413)
     return err("File too large (max 1 MB).", 413)
 
 
@@ -903,7 +919,7 @@ def auth_register_route():
             avatar_filename = secure_filename(f.filename)
     elif "avatar_b64" in data and data["avatar_b64"]:
         try:
-            avatar_bytes = base64.b64decode(data["avatar_b64"])
+            avatar_bytes = base64.b64decode(data["avatar_b64"], validate=True)
             avatar_filename = secure_filename(data.get("avatar_filename") or "avatar.png")
         except Exception:
             return err("Invalid base64 payload for avatar image.", 400)
@@ -919,10 +935,15 @@ def auth_register_route():
             avatar_filename=avatar_filename
         )
         return ok({"user": user_info, "token": token})
+    except auth.ValidationError as val_err:
+        return jsonify(success=False, error=str(val_err), errors=val_err.errors), 400
+    except sqlite3.IntegrityError:
+        return err("A user with that username already exists.", 400)
     except ValueError as val_err:
         return err(str(val_err), 400)
     except Exception as exc:
-        return err(f"Registration failed: {exc}", 500)
+        app.logger.exception("Registration failed")
+        return err("Registration is temporarily unavailable. Please try again later.", 500)
 
 
 @app.route("/api/auth/login", methods=["POST"])
@@ -939,10 +960,13 @@ def auth_login_route():
     try:
         user_info, token = auth.login_user(username, password)
         return ok({"user": user_info, "token": token})
+    except auth.ValidationError as val_err:
+        return jsonify(success=False, error=str(val_err), errors=val_err.errors), 400
     except ValueError as val_err:
         return err(str(val_err), 401)
     except Exception as exc:
-        return err(f"Login failed: {exc}", 500)
+        app.logger.exception("Login failed")
+        return err("Login is temporarily unavailable. Please try again later.", 500)
 
 
 @app.route("/api/auth/me", methods=["GET"])
@@ -971,7 +995,7 @@ def auth_avatar_route():
         data = request.get_json(silent=True) or (request.form.to_dict() if request.form else {})
         if "avatar_b64" in data and data["avatar_b64"]:
             try:
-                avatar_bytes = base64.b64decode(data["avatar_b64"])
+                avatar_bytes = base64.b64decode(data["avatar_b64"], validate=True)
                 avatar_filename = secure_filename(data.get("avatar_filename") or "avatar.png")
             except Exception:
                 return err("Invalid base64 payload for avatar image.", 400)
@@ -985,7 +1009,8 @@ def auth_avatar_route():
     except ValueError as val_err:
         return err(str(val_err), 400)
     except Exception as exc:
-        return err(f"Avatar update failed: {exc}", 500)
+        app.logger.exception("Avatar update failed")
+        return err("Avatar upload is temporarily unavailable. Please try again later.", 500)
 
 
 @app.route("/api/user/progress", methods=["GET", "POST"])

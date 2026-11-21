@@ -13,6 +13,7 @@ import re
 import sqlite3
 import tempfile
 import time
+from contextlib import contextmanager
 from typing import Optional, Tuple, Dict, Any
 
 import bcrypt
@@ -66,15 +67,20 @@ else:
 
 _db_initialized = False
 
+@contextmanager
 def get_db():
     global _db_initialized
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    if not _db_initialized:
-        init_db(conn)
-        _db_initialized = True
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        if not _db_initialized:
+            init_db(conn)
+            _db_initialized = True
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db(conn=None):
@@ -243,19 +249,37 @@ def save_avatar_file(user_id: int, raw_bytes: bytes, ext: str) -> str:
 
 
 # ------------------------------------------------ USER OPERATIONS
+class ValidationError(ValueError):
+    def __init__(self, errors):
+        self.errors = errors
+        super().__init__(" ".join(errors.values()))
+
+
+def validate_credentials(username, password, registering=False):
+    errors = {}
+    if not isinstance(username, str) or not username.strip():
+        errors["username"] = "Username is required and must be text."
+    elif registering:
+        username = username.strip()
+        if not 3 <= len(username) <= 30:
+            errors["username"] = "Username must be between 3 and 30 characters."
+        elif not re.fullmatch(r"[a-zA-Z0-9_\-]+", username):
+            errors["username"] = "Username can only contain letters, numbers, hyphens, and underscores."
+    if not isinstance(password, str) or not password:
+        errors["password"] = "Password is required and must be text."
+    elif registering and len(password) < 8:
+        errors["password"] = "Password must be at least 8 characters long."
+    elif registering and len(password.encode("utf-8")) > 72:
+        errors["password"] = "Password must be no more than 72 UTF-8 bytes."
+    if errors:
+        raise ValidationError(errors)
+
+
 def register_user(username: str, password: str, avatar_bytes: Optional[bytes] = None,
                   avatar_filename: Optional[str] = None) -> Tuple[Dict[str, Any], str]:
+    validate_credentials(username, password, registering=True)
     username = (username or "").strip()
     password = password or ""
-
-    if not username:
-        raise ValueError("Username is required.")
-    if len(username) < 3 or len(username) > 30:
-        raise ValueError("Username must be between 3 and 30 characters.")
-    if not re.match(r"^[a-zA-Z0-9_\-]+$", username):
-        raise ValueError("Username can only contain letters, numbers, hyphens, and underscores.")
-    if len(password) < 4:
-        raise ValueError("Password must be at least 4 characters long.")
 
     pw_hash = hash_password(password)
 
@@ -272,7 +296,7 @@ def register_user(username: str, password: str, avatar_bytes: Optional[bytes] = 
         user_id = cur.lastrowid
 
         avatar_url = ""
-        if avatar_bytes and avatar_filename:
+        if avatar_bytes is not None and avatar_filename:
             valid_bytes, ext = validate_avatar_file(avatar_bytes, avatar_filename)
             avatar_url = save_avatar_file(user_id, valid_bytes, ext)
             cur.execute("UPDATE users SET avatar_url = ? WHERE id = ?", (avatar_url, user_id))
@@ -290,6 +314,7 @@ def register_user(username: str, password: str, avatar_bytes: Optional[bytes] = 
 
 
 def login_user(username: str, password: str) -> Tuple[Dict[str, Any], str]:
+    validate_credentials(username, password)
     username = (username or "").strip()
     password = password or ""
     if not username or not password:

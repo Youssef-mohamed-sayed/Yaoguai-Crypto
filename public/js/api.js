@@ -37,12 +37,34 @@ function setStoredUser(user) {
   } catch (_) {}
 }
 
+async function fetchWithErrors(url, options) {
+  try {
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(30000) });
+  } catch (cause) {
+    throw new Error(cause.name === "TimeoutError"
+      ? "The request timed out. Please try again."
+      : "Unable to connect to the server. Check your connection and try again.");
+  }
+}
+
+function responseError(res, json) {
+  const fallback = res.status === 429
+    ? "Too many attempts. Please wait and try again."
+    : res.status >= 500
+      ? "The server is temporarily unavailable. Please try again later."
+      : `Request failed (${res.status}). Please try again.`;
+  const messages = json && json.errors && Object.values(json.errors);
+  const error = new Error(messages && messages.length ? messages.join("\n") : (json && json.error) || fallback);
+  error.status = res.status;
+  return error;
+}
+
 async function apiPost(path, body) {
   const headers = { "Content-Type": "application/json" };
   const token = getAuthToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(API_BASE_URL + path, {
+  const res = await fetchWithErrors(API_BASE_URL + path, {
     method: "POST",
     headers,
     body: JSON.stringify(body || {}),
@@ -50,7 +72,7 @@ async function apiPost(path, body) {
   let json;
   try { json = await res.json(); } catch (e) { json = null; }
   if (!res.ok || !json || json.error) {
-    throw new Error((json && json.error) || `Request failed (${res.status})`);
+    throw responseError(res, json);
   }
   return json.result !== undefined ? json.result : json;
 }
@@ -60,14 +82,14 @@ async function apiGet(path) {
   const token = getAuthToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(API_BASE_URL + path, {
+  const res = await fetchWithErrors(API_BASE_URL + path, {
     method: "GET",
     headers,
   });
   let json;
   try { json = await res.json(); } catch (e) { json = null; }
   if (!res.ok || !json || json.error) {
-    throw new Error((json && json.error) || `Request failed (${res.status})`);
+    throw responseError(res, json);
   }
   return json.result !== undefined ? json.result : json;
 }
@@ -83,7 +105,7 @@ async function apiFetch(path, bodyOrFormData, isJson = false) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(bodyOrFormData || {});
   }
-  const res = await fetch(API_BASE_URL + path, {
+  const res = await fetchWithErrors(API_BASE_URL + path, {
     method: "POST",
     headers,
     body,
@@ -110,7 +132,7 @@ async function apiFetch(path, bodyOrFormData, isJson = false) {
   let json;
   try { json = await res.json(); } catch (e) { json = null; }
   if (!res.ok || !json || json.error) {
-    throw new Error((json && json.error) || `Request failed (${res.status})`);
+    throw responseError(res, json);
   }
   return json.result !== undefined ? json.result : json;
 }

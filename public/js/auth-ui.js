@@ -46,7 +46,8 @@
             this.renderTopbar();
             this.checkLessonGuestBanner();
           }
-        }).catch(() => {
+        }).catch((err) => {
+          if (err.status !== 401) return;
           // If token expired or invalid, log out cleanly
           if (window.CryptoAPI && window.CryptoAPI.auth) {
             window.CryptoAPI.auth.logout();
@@ -194,7 +195,7 @@
 
         .auth-msg {
           min-height: 20px; font-size: 13px; margin-bottom: 14px;
-          display: none; padding: 8px 12px;
+          display: none; padding: 8px 12px; white-space: pre-line;
         }
         .auth-msg.error {
           display: block; background: var(--red-wash);
@@ -285,8 +286,8 @@
           </div>
           <div class="auth-modal-body">
             <!-- LOGIN TAB -->
-            <form id="auth-form-login" onsubmit="AuthUI.handleLogin(event)">
-              <div class="auth-msg" id="login-msg"></div>
+            <form novalidate id="auth-form-login" onsubmit="AuthUI.handleLogin(event)">
+              <div role="alert" aria-live="polite" class="auth-msg" id="login-msg"></div>
               <div class="auth-form-group">
                 <label for="login-username">Username</label>
                 <input type="text" id="login-username" autocomplete="username" required spellcheck="false">
@@ -302,17 +303,17 @@
             </form>
 
             <!-- REGISTER TAB -->
-            <form id="auth-form-register" style="display:none;" onsubmit="AuthUI.handleRegister(event)">
-              <div class="auth-msg" id="reg-msg"></div>
+            <form novalidate id="auth-form-register" style="display:none;" onsubmit="AuthUI.handleRegister(event)">
+              <div role="alert" aria-live="polite" class="auth-msg" id="reg-msg"></div>
               <div class="auth-form-group">
                 <label for="reg-username">Username</label>
                 <input type="text" id="reg-username" autocomplete="username" required minlength="3" maxlength="30" spellcheck="false">
-                <span class="auth-help">3–30 characters (letters, numbers, underscores).</span>
+                <span class="auth-help">3–30 characters (letters, numbers, hyphens, underscores).</span>
               </div>
               <div class="auth-form-group">
                 <label for="reg-password">Password</label>
-                <input type="password" id="reg-password" autocomplete="new-password" required minlength="4">
-                <span class="auth-help">Minimum 4 characters.</span>
+                <input type="password" id="reg-password" autocomplete="new-password" required minlength="8" aria-describedby="reg-password-help">
+                <span class="auth-help" id="reg-password-help">At least 8 characters; no more than 72 UTF-8 bytes.</span>
               </div>
               <div class="auth-form-group">
                 <label>Profile Avatar (Optional)</label>
@@ -333,7 +334,7 @@
 
             <!-- PROFILE TAB -->
             <div id="auth-panel-profile" style="display:none;">
-              <div class="auth-msg" id="profile-msg"></div>
+              <div role="alert" aria-live="polite" class="auth-msg" id="profile-msg"></div>
               <div class="profile-card">
                 <img id="profile-avatar-img" class="profile-avatar-lg" src="${DEFAULT_AVATAR}" alt="User Avatar">
                 <h4 id="profile-username-val" class="profile-username">User</h4>
@@ -449,6 +450,7 @@
       const isPngOrJpg = fname.endsWith(".png") || fname.endsWith(".jpg") || fname.endsWith(".jpeg");
       if (!isPngOrJpg) {
         if (msgEl) {
+          msgEl.style.display = "block";
           msgEl.className = "auth-msg error";
           msgEl.textContent = "Invalid avatar file type. Strictly only .png and .jpg files are allowed.";
         }
@@ -457,10 +459,11 @@
         return;
       }
 
-      if (file.size > 2 * 1024 * 1024) {
+      if (file.size === 0 || file.size > 2 * 1024 * 1024) {
         if (msgEl) {
+          msgEl.style.display = "block";
           msgEl.className = "auth-msg error";
-          msgEl.textContent = "Avatar file size must be less than 2 MB.";
+          msgEl.textContent = "Avatar file must not be empty and must be no more than 2 MB.";
         }
         inputEl.value = "";
         if (preview) preview.src = DEFAULT_AVATAR;
@@ -473,7 +476,34 @@
       reader.onload = (e) => {
         if (preview) preview.src = e.target.result;
       };
+      reader.onerror = () => {
+        msgEl.style.display = "block";
+        msgEl.className = "auth-msg error";
+        msgEl.textContent = "Could not read the avatar file. Please select it again.";
+        inputEl.value = "";
+      };
       reader.readAsDataURL(file);
+    },
+
+    validateForm(username, password, registering, msgEl) {
+      const errors = [];
+      if (!username) errors.push("Username is required.");
+      else if (registering && (username.length < 3 || username.length > 30))
+        errors.push("Username must be between 3 and 30 characters.");
+      else if (registering && !/^[a-zA-Z0-9_-]+$/.test(username))
+        errors.push("Username can only contain letters, numbers, hyphens, and underscores.");
+      if (!password) errors.push("Password is required.");
+      else if (registering && Array.from(password).length < 8)
+        errors.push("Password must be at least 8 characters long.");
+      else if (registering && new TextEncoder().encode(password).length > 72)
+        errors.push("Password must be no more than 72 UTF-8 bytes.");
+      if (errors.length) {
+        msgEl.style.display = "block";
+        msgEl.className = "auth-msg error";
+        msgEl.textContent = errors.join("\n");
+        return false;
+      }
+      return true;
     },
 
     async handleLogin(event) {
@@ -483,12 +513,14 @@
       const username = document.getElementById("login-username").value.trim();
       const password = document.getElementById("login-password").value;
 
+      if (!this.validateForm(username, password, false, msgEl)) return;
       msgEl.style.display = "none";
       btn.disabled = true;
       btn.textContent = "Logging in…";
 
       try {
         const res = await window.CryptoAPI.auth.login(username, password);
+        msgEl.style.display = "block";
         msgEl.className = "auth-msg success";
         msgEl.textContent = "Login successful! Welcome back.";
         setTimeout(() => {
@@ -500,6 +532,7 @@
           if (typeof renderDashboard === "function") renderDashboard();
         }, 500);
       } catch (err) {
+        msgEl.style.display = "block";
         msgEl.className = "auth-msg error";
         msgEl.textContent = err.message || "Login failed. Check your credentials.";
       } finally {
@@ -520,18 +553,27 @@
       if (avatarFile) {
         const fname = avatarFile.name.toLowerCase();
         if (!fname.endsWith(".png") && !fname.endsWith(".jpg") && !fname.endsWith(".jpeg")) {
+          msgEl.style.display = "block";
           msgEl.className = "auth-msg error";
           msgEl.textContent = "Profile avatar must be a .png or .jpg file.";
           return;
         }
+        if (avatarFile.size === 0 || avatarFile.size > 2 * 1024 * 1024) {
+          msgEl.style.display = "block";
+          msgEl.className = "auth-msg error";
+          msgEl.textContent = "Avatar file must not be empty and must be no more than 2 MB.";
+          return;
+        }
       }
 
+      if (!this.validateForm(username, password, true, msgEl)) return;
       msgEl.style.display = "none";
       btn.disabled = true;
       btn.textContent = "Creating account…";
 
       try {
         const res = await window.CryptoAPI.auth.register(username, password, avatarFile);
+        msgEl.style.display = "block";
         msgEl.className = "auth-msg success";
         msgEl.textContent = "Account created successfully! Welcome to YAOGUAI.";
         setTimeout(() => {
@@ -543,6 +585,7 @@
           if (typeof renderDashboard === "function") renderDashboard();
         }, 600);
       } catch (err) {
+        msgEl.style.display = "block";
         msgEl.className = "auth-msg error";
         msgEl.textContent = err.message || "Registration failed.";
       } finally {
@@ -558,29 +601,34 @@
 
       const fname = file.name.toLowerCase();
       if (!fname.endsWith(".png") && !fname.endsWith(".jpg") && !fname.endsWith(".jpeg")) {
+        msgEl.style.display = "block";
         msgEl.className = "auth-msg error";
         msgEl.textContent = "Avatar must be a .png or .jpg image.";
         inputEl.value = "";
         return;
       }
 
-      if (file.size > 2 * 1024 * 1024) {
+      if (file.size === 0 || file.size > 2 * 1024 * 1024) {
+        msgEl.style.display = "block";
         msgEl.className = "auth-msg error";
-        msgEl.textContent = "Avatar image must be under 2 MB.";
+        msgEl.textContent = "Avatar file must not be empty and must be no more than 2 MB.";
         inputEl.value = "";
         return;
       }
 
+      msgEl.style.display = "block";
       msgEl.className = "auth-msg success";
       msgEl.textContent = "Uploading avatar…";
 
       try {
         const res = await window.CryptoAPI.auth.updateAvatar(file);
+        msgEl.style.display = "block";
         msgEl.className = "auth-msg success";
         msgEl.textContent = "Avatar updated successfully!";
         this.renderTopbar();
         this.loadProfileData();
       } catch (err) {
+        msgEl.style.display = "block";
         msgEl.className = "auth-msg error";
         msgEl.textContent = err.message || "Failed to upload avatar.";
       } finally {
