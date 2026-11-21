@@ -33,3 +33,27 @@ def bcrypt_hash(data: str, rounds: int = 12) -> str:
 
 def bcrypt_verify(data: str, hashed: str) -> bool:
     return _bcrypt_lib.checkpw(data.encode("utf-8"), hashed.encode("ascii"))
+
+
+def md5_hash_bytes(data: bytes) -> str:
+    return md5_hexdigest(data)
+
+
+def sha1_hash_bytes(data: bytes) -> str:
+    return sha1_hexdigest(data)
+
+
+def sha256_hash_bytes(data: bytes) -> str:
+    return sha256_hexdigest(data)
+
+
+def bcrypt_hash_bytes(data: bytes, rounds: int = 12) -> str:
+    salt = _bcrypt_lib.gensalt(rounds=rounds)
+    return _bcrypt_lib.hashpw(data, salt).decode("ascii")
+
+
+def bcrypt_verify_bytes(data: bytes, hashed: str) -> bool:
+    try:
+        return _bcrypt_lib.checkpw(data, hashed.strip().encode("ascii"))
+    except Exception:
+        return False

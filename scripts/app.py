@@ -431,11 +431,20 @@ def crack_hashcat_route():
 def hashescom_route():
     data = get_json()
     try:
-        require(data, "hash", "api_key")
-        result = hashescom.hashescom_lookup(data["hash"], data["api_key"])
+        require(data, "hash")
+        api_key = data.get("api_key") or hashescom.DEFAULT_API_KEY
+        result = hashescom.hashescom_lookup(data["hash"], api_key)
         return jsonify(result)
     except ValueError as e:
         return err(str(e))
+
+
+@app.route("/api/hashescom/balance", methods=["GET", "POST"])
+def hashescom_balance_route():
+    data = get_json() if request.method == "POST" else request.args
+    api_key = data.get("api_key") or data.get("key") or hashescom.DEFAULT_API_KEY
+    result = hashescom.hashescom_balance(api_key)
+    return jsonify(result)
 
 
 @app.route("/api/hashescom/identify", methods=["POST"])
@@ -451,6 +460,241 @@ def hashescom_identify_route():
 
 
 # ---------------------------------------------------- FILE ENCRYPT / DECRYPT
+@app.route("/api/file/transform", methods=["POST"])
+def file_transform_route():
+    action = request.form.get("action", "encrypt").lower().strip()
+    algo = request.form.get("algo", "des").lower().strip()
+
+    # For hybrid decrypt called with JSON payload
+    if not request.files and request.is_json:
+        data = request.get_json(silent=True) or {}
+        action = "decrypt"
+        algo = "hybrid"
+        try:
+            require(data, "encrypted_key", "d", "n")
+            if "encrypted_file_b64" not in data or not data["encrypted_file_b64"]:
+                return err("Encrypted file payload is required.")
+            d_int = int(str(data["d"]).strip())
+            n_int = int(str(data["n"]).strip())
+            enc_key_int = int(str(data["encrypted_key"]).strip())
+            session_key_int = rsa_decrypt_int(enc_key_int, d_int, n_int)
+            session_key_bytes = session_key_int.to_bytes(8, "big")
+            encrypted_file = base64.b64decode(data["encrypted_file_b64"])
+            plain = encryption.des_decrypt_file_bytes(encrypted_file, session_key_bytes.hex())
+            orig_name = secure_filename(str(data.get("original_filename") or "decrypted.txt").strip()) or "decrypted.txt"
+            return send_file(io.BytesIO(plain), as_attachment=True, download_name=orig_name, mimetype="application/octet-stream")
+        except Exception as e:
+            return err(f"Hybrid decryption failed: {e}")
+
+    if "file" not in request.files or not request.files["file"].filename:
+        return err("No file uploaded.")
+
+    file = request.files["file"]
+    raw_bytes = file.read()
+    if not raw_bytes:
+        return err("Uploaded file is empty.")
+    orig_name = secure_filename(file.filename) or "file.txt"
+
+    # 1. Hashing
+    if action == "hash":
+        try:
+            if algo == "md5":
+                h = hashing.md5_hash_bytes(raw_bytes)
+            elif algo == "sha1":
+                h = hashing.sha1_hash_bytes(raw_bytes)
+            elif algo == "sha256":
+                h = hashing.sha256_hash_bytes(raw_bytes)
+            elif algo == "bcrypt":
+                rounds = int(request.form.get("rounds", 10))
+                h = hashing.bcrypt_hash_bytes(raw_bytes, rounds)
+            else:
+                return err(f"Unsupported hash algorithm: {algo}")
+            return ok({"algo": algo, "hash": h, "filename": orig_name})
+        except Exception as e:
+            return err(f"Hashing failed: {e}")
+
+    # 2. Hash Verification
+    if action == "verify":
+        expected = request.form.get("expected_hash", "").strip()
+        if not expected:
+            return err("Expected hash is required.")
+        try:
+            if algo in ("md5", "sha1", "sha256"):
+                if algo == "md5":
+                    actual = hashing.md5_hash_bytes(raw_bytes)
+                elif algo == "sha1":
+                    actual = hashing.sha1_hash_bytes(raw_bytes)
+                else:
+                    actual = hashing.sha256_hash_bytes(raw_bytes)
+                match = (actual.lower() == expected.lower())
+                return ok({"algo": algo, "match": match, "actual_hash": actual, "expected_hash": expected, "filename": orig_name})
+            elif algo == "bcrypt":
+                match = hashing.bcrypt_verify_bytes(raw_bytes, expected)
+                return ok({"algo": algo, "match": match, "expected_hash": expected, "filename": orig_name})
+            else:
+                return err(f"Unsupported verify algorithm: {algo}")
+        except Exception as e:
+            return err(f"Verification failed: {e}")
+
+    # 3. Encryption
+    if action == "encrypt":
+        try:
+            if algo == "des":
+                key = request.form.get("key", "").strip()
+                if not key:
+                    return err("Key is required.")
+                out = encryption.des_encrypt_file_bytes(raw_bytes, key)
+                ext = ".des.enc"
+            elif algo == "aes":
+                key = request.form.get("key", "").strip()
+                if not key:
+                    return err("Key is required.")
+                out = encryption.aes_encrypt_file_bytes(raw_bytes, key)
+                ext = ".aes.enc"
+            elif algo == "3des":
+                k1 = request.form.get("key1", "").strip()
+                k2 = request.form.get("key2", "").strip()
+                k3 = request.form.get("key3", "").strip() or None
+                if not k1 or not k2:
+                    return err("Key 1 and Key 2 are required for 3DES.")
+                out = encryption.triple_des_encrypt_file_bytes(raw_bytes, k1, k2, k3)
+                ext = ".3des.enc"
+            elif algo == "rc4":
+                key = request.form.get("key", "").strip()
+                if not key:
+                    return err("Key is required.")
+                out = encryption.rc4_file_bytes(raw_bytes, key)
+                ext = ".rc4.enc"
+            elif algo == "xor":
+                key = request.form.get("key", "").strip()
+                if not key:
+                    return err("Key is required.")
+                out = encryption.xor_file_bytes(raw_bytes, key)
+                ext = ".xor.enc"
+            elif algo == "hybrid":
+                try:
+                    e = int(str(request.form.get("e", "")).strip())
+                    n = int(str(request.form.get("n", "")).strip())
+                except (ValueError, TypeError):
+                    return err("Valid RSA public key (e and n integers) is required.")
+                if n <= 2**64:
+                    return err("RSA key too small to wrap an 8-byte session key. Generate at least a 128-bit key pair.")
+                session_key_bytes = os.urandom(8)
+                encrypted_file = encryption.des_encrypt_file_bytes(raw_bytes, session_key_bytes.hex())
+                session_key_int = int.from_bytes(session_key_bytes, "big")
+                encrypted_key = rsa_encrypt_int(session_key_int, e, n)
+                return ok({
+                    "encrypted_file_b64": base64.b64encode(encrypted_file).decode("ascii"),
+                    "encrypted_key": str(encrypted_key),
+                    "original_filename": orig_name
+                })
+            else:
+                return err(f"Unsupported encrypt algorithm: {algo}")
+
+            download_name = f"{orig_name}{ext}"
+            return send_file(io.BytesIO(out), as_attachment=True, download_name=download_name, mimetype="application/octet-stream")
+        except Exception as e:
+            return err(f"Encryption failed: {e}")
+
+    # 4. Encoding
+    if action == "encode":
+        try:
+            if algo == "base64":
+                out = encoding.base64_encode_bytes(raw_bytes)
+                ext = ".b64"
+            elif algo == "hex":
+                out = encoding.hex_encode_bytes(raw_bytes)
+                ext = ".hex"
+            elif algo == "ascii":
+                out = encoding.ascii_encode_bytes(raw_bytes)
+                ext = ".ascii"
+            elif algo == "url":
+                out = encoding.url_encode_bytes(raw_bytes)
+                ext = ".url"
+            else:
+                return err(f"Unsupported encode algorithm: {algo}")
+
+            download_name = f"{orig_name}{ext}"
+            return send_file(io.BytesIO(out), as_attachment=True, download_name=download_name, mimetype="application/octet-stream")
+        except Exception as e:
+            return err(f"Encoding failed: {e}")
+
+    # 5. Decryption
+    if action == "decrypt":
+        restore_name = secure_filename(str(request.form.get("original_filename", "")).strip()) or "decrypted.txt"
+        try:
+            if algo == "des":
+                key = request.form.get("key", "").strip()
+                if not key:
+                    return err("Key is required.")
+                out = encryption.des_decrypt_file_bytes(raw_bytes, key)
+            elif algo == "aes":
+                key = request.form.get("key", "").strip()
+                if not key:
+                    return err("Key is required.")
+                out = encryption.aes_decrypt_file_bytes(raw_bytes, key)
+            elif algo == "3des":
+                k1 = request.form.get("key1", "").strip()
+                k2 = request.form.get("key2", "").strip()
+                k3 = request.form.get("key3", "").strip() or None
+                if not k1 or not k2:
+                    return err("Key 1 and Key 2 are required for 3DES.")
+                out = encryption.triple_des_decrypt_file_bytes(raw_bytes, k1, k2, k3)
+            elif algo == "rc4":
+                key = request.form.get("key", "").strip()
+                if not key:
+                    return err("Key is required.")
+                out = encryption.rc4_file_bytes(raw_bytes, key)
+            elif algo == "xor":
+                key = request.form.get("key", "").strip()
+                if not key:
+                    return err("Key is required.")
+                out = encryption.xor_file_bytes(raw_bytes, key)
+            elif algo == "hybrid":
+                try:
+                    d_int = int(str(request.form.get("d", "")).strip())
+                    n_int = int(str(request.form.get("n", "")).strip())
+                    enc_key_int = int(str(request.form.get("encrypted_key", "")).strip())
+                except (ValueError, TypeError) as e:
+                    return err(f"Invalid RSA parameters: {e}")
+                try:
+                    file_str = raw_bytes.decode("ascii").strip()
+                    base64.b64decode(file_str, validate=True)
+                    encrypted_file = base64.b64decode(file_str)
+                except Exception:
+                    encrypted_file = raw_bytes
+                session_key_int = rsa_decrypt_int(enc_key_int, d_int, n_int)
+                session_key_bytes = session_key_int.to_bytes(8, "big")
+                out = encryption.des_decrypt_file_bytes(encrypted_file, session_key_bytes.hex())
+            else:
+                return err(f"Unsupported decrypt algorithm: {algo}")
+
+            return send_file(io.BytesIO(out), as_attachment=True, download_name=restore_name, mimetype="application/octet-stream")
+        except Exception as e:
+            return err(f"Decryption failed: {e}")
+
+    # 6. Decoding
+    if action == "decode":
+        restore_name = secure_filename(str(request.form.get("original_filename", "")).strip()) or "decoded.txt"
+        try:
+            if algo == "base64":
+                out = encoding.base64_decode_bytes(raw_bytes)
+            elif algo == "hex":
+                out = encoding.hex_decode_bytes(raw_bytes)
+            elif algo == "ascii":
+                out = encoding.ascii_decode_bytes(raw_bytes)
+            elif algo == "url":
+                out = encoding.url_decode_bytes(raw_bytes)
+            else:
+                return err(f"Unsupported decode algorithm: {algo}")
+
+            return send_file(io.BytesIO(out), as_attachment=True, download_name=restore_name, mimetype="application/octet-stream")
+        except Exception as e:
+            return err(f"Decoding failed: {e}")
+
+    return err(f"Invalid action: {action}")
+
+
 @app.route("/api/file/encrypt/des", methods=["POST"])
 def file_encrypt_des_route():
     if "file" not in request.files:

@@ -28,31 +28,35 @@ Navigate to **Tools** in the top navigation bar (`tools.html`) to access the int
 
 ---
 
-## 3. Encrypting & Decrypting Files
+## 3. File Cryptography: Encryption, Encoding & Hashing
 
-The **File Crypto** section supports secure file handling with built-in client validation, in-flight progress indicators, and automatic downloads.
+The **File Crypto** section supports full-file operations across all algorithms in the curriculum with client validation, progress indicators, and automatic downloads:
 
-### Standard DES Mode
-1. **Encrypt**:
-   - Choose **File Encrypt** from the sidebar and select the **DES** algorithm tab.
-   - Choose your `.txt` file (max 1 MB) and provide an 8-character secret key.
-   - Click **Encrypt & Download**. Your browser will immediately download `<filename>.des.enc`.
-2. **Decrypt**:
-   - Select **File Decrypt** and the **DES** tab.
-   - Choose your encrypted `.des.enc` file, provide the matching secret key, and enter the desired original filename (e.g. `notes.txt`).
-   - Click **Decrypt & Download** to retrieve your restored plaintext file.
+### File Encrypt / Encode / Hash
+1. **Encryption**:
+   - Choose **File Encrypt** and select **Encryption**.
+   - Pick your algorithm: **DES**, **AES-128**, **Triple DES (3DES)**, **RC4**, **XOR**, or **Hybrid RSA+DES**.
+   - Upload your file, supply the required key(s), and click **Encrypt & Download**. Your browser immediately downloads `<filename>.<algo>.enc`.
+   - In **Hybrid RSA+DES** mode: paste your RSA modulus `n` and exponent `e` (generated with the RSA tool). The file is downloaded as `.hybrid.enc` and the RSA-encrypted session key is displayed on screen with a one-click **Copy key** button.
+2. **Encoding**:
+   - Select **Encoding** to transform file bytes into text representation: **Base64** (`.b64`), **Hexadecimal** (`.hex`), **ASCII codes** (`.ascii`), or **URL encoding** (`.url`).
+   - No secret key is needed. Click **Encode & Download** to save the encoded file.
+3. **Hashing**:
+   - Select **Hashing** to compute cryptographic digests: **MD5**, **SHA-1**, **SHA-256**, or **bcrypt** (with adjustable cost factor).
+   - Click **Compute Hash** to inspect the hash on screen, copy it to clipboard, or download an industry-standard checksum file (`<filename>.<algo>`).
 
-### Hybrid RSA + DES Mode
-Hybrid encryption combines the speed of symmetric DES with the key-exchange security of asymmetric RSA:
-1. **Key Generation**: Open the **RSA** tool, select your key size (e.g. 256-bit or 512-bit), click **Generate keys**, and copy the public modulus `n` and exponent `e`.
-2. **Hybrid Encrypt**:
-   - In **File Encrypt**, select **Hybrid RSA+DES** and choose your `.txt` file.
-   - Paste `n` and `e`, then click **Encrypt & Download**.
-   - The app generates a cryptographically random 8-byte DES session key, encrypts the file with DES, encrypts the session key with RSA, downloads `<filename>.hybrid.enc`, and presents the RSA-encrypted session key on screen. Click **Copy key** to store it safely.
-3. **Hybrid Decrypt**:
-   - In **File Decrypt**, select **Hybrid RSA+DES** and select your `.hybrid.enc` file.
-   - Paste the encrypted session key, your private exponent `d`, and modulus `n`.
+### File Decrypt / Decode / Verify
+1. **Decryption**:
+   - Choose **File Decrypt** and select **Decryption**.
+   - Pick your algorithm (**DES**, **AES-128**, **3DES**, **RC4**, **XOR**, or **Hybrid RSA+DES**).
+   - Upload the encrypted file, provide the matching secret key (or for Hybrid: encrypted session key, private exponent `d`, and modulus `n`), and enter the target filename (automatically suggested).
    - Click **Decrypt & Download** to recover your original file.
+2. **Decoding**:
+   - Select **Decoding** to reverse **Base64**, **Hexadecimal**, **ASCII codes**, or **URL encoding** back to the original file bytes.
+   - Click **Decode & Download**.
+3. **Hash Verify**:
+   - Select **Hash Verify** to audit file integrity against an expected checksum.
+   - Upload the file, select the algorithm (**MD5**, **SHA-1**, **SHA-256**, or **bcrypt**), paste the expected hash, and click **Verify Checksum** to receive an instant match/mismatch status.
 
 ---
 
@@ -61,7 +65,7 @@ Hybrid encryption combines the speed of symmetric DES with the key-exchange secu
 Under **Crack a hash**, three dedicated modes assist with CTF challenges and audits:
 1. **Crack (sample wordlist)**: Fast offline dictionary attack across MD5, SHA-1, and SHA-256 using the built-in wordlist.
 2. **Crack (Hashes.com)**: Online crowd-sourced database lookup via the Hashes.com API. Enter your personal API key once (persisted safely in your browser's local storage).
-3. **Identify algorithm**: Queries the Hashes.com Hash Identifier API to inspect hash length and format patterns, returning probable algorithm candidates without requiring an API key.
+3. **Identify algorithm**: Queries the Hashes.com Hash Identifier API to inspect hash length, format, and salt patterns, automatically identifying probable algorithm candidates without requiring hash type selection or an API key.
 
 ---
 

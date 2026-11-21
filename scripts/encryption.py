@@ -53,6 +53,77 @@ def des_decrypt_file_bytes(data: bytes, key: str) -> bytes:
     return _dec(data, key8)
 
 
+def aes_encrypt_file_bytes(data: bytes, key: str) -> bytes:
+    """Encrypt raw bytes with AES-128; return raw encrypted bytes."""
+    key16 = _normalize_key(key, 16)
+    return aes_encrypt_bytes(data, key16)
+
+
+def aes_decrypt_file_bytes(data: bytes, key: str) -> bytes:
+    """Decrypt raw AES-128 encrypted bytes; return raw plaintext bytes."""
+    if not data or len(data) % 16 != 0:
+        raise ValueError("Malformed ciphertext: file length must be a non-zero multiple of 16 bytes for AES.")
+    from aes_core import aes_decrypt_bytes as _dec
+    key16 = _normalize_key(key, 16)
+    return _dec(data, key16)
+
+
+def triple_des_encrypt_file_bytes(data: bytes, key1: str, key2: str, key3: str = None) -> bytes:
+    """Encrypt raw bytes with Triple-DES (EDE3/EDE2)."""
+    import des_core as d
+    k1 = _normalize_key(key1, 8)
+    k2 = _normalize_key(key2, 8)
+    k3 = _normalize_key(key3 if key3 else key1, 8)
+    step1 = d.des_encrypt_bytes(data, k1)
+    subkeys2 = d.generate_subkeys(d._bytes_to_bits(k2))
+    step2 = bytearray()
+    for i in range(0, len(step1), 8):
+        block = d._bytes_to_bits(step1[i:i + 8])
+        step2 += d._bits_to_bytes(d._des_block(block, subkeys2, decrypt=True))
+    subkeys3 = d.generate_subkeys(d._bytes_to_bits(k3))
+    step3 = bytearray()
+    for i in range(0, len(step2), 8):
+        block = d._bytes_to_bits(bytes(step2[i:i + 8]))
+        step3 += d._bits_to_bytes(d._des_block(block, subkeys3, decrypt=False))
+    return bytes(step3)
+
+
+def triple_des_decrypt_file_bytes(data: bytes, key1: str, key2: str, key3: str = None) -> bytes:
+    """Decrypt raw bytes with Triple-DES (EDE3/EDE2)."""
+    if not data or len(data) % 8 != 0:
+        raise ValueError("Malformed ciphertext: file length must be a non-zero multiple of 8 bytes for 3DES.")
+    import des_core as d
+    k1 = _normalize_key(key1, 8)
+    k2 = _normalize_key(key2, 8)
+    k3 = _normalize_key(key3 if key3 else key1, 8)
+    subkeys3 = d.generate_subkeys(d._bytes_to_bits(k3))
+    step1 = bytearray()
+    for i in range(0, len(data), 8):
+        block = d._bytes_to_bits(data[i:i + 8])
+        step1 += d._bits_to_bytes(d._des_block(block, subkeys3, decrypt=True))
+    subkeys2 = d.generate_subkeys(d._bytes_to_bits(k2))
+    step2 = bytearray()
+    for i in range(0, len(step1), 8):
+        block = d._bytes_to_bits(bytes(step1[i:i + 8]))
+        step2 += d._bits_to_bytes(d._des_block(block, subkeys2, decrypt=False))
+    subkeys1 = d.generate_subkeys(d._bytes_to_bits(k1))
+    step3 = bytearray()
+    for i in range(0, len(step2), 8):
+        block = d._bytes_to_bits(bytes(step2[i:i + 8]))
+        step3 += d._bits_to_bytes(d._des_block(block, subkeys1, decrypt=True))
+    return d._unpad(bytes(step3))
+
+
+def rc4_file_bytes(data: bytes, key: str) -> bytes:
+    """Encrypt/decrypt raw bytes with RC4 stream cipher."""
+    return rc4_crypt_bytes(data, key.encode("utf-8"))
+
+
+def xor_file_bytes(data: bytes, key: str) -> bytes:
+    """Encrypt/decrypt raw bytes with repeating-key XOR."""
+    return xor_crypt_bytes(data, key.encode("utf-8"))
+
+
 def triple_des_encrypt(data: str, key1: str, key2: str, key3: str = None) -> str:
     """EDE3: encrypt with key1, decrypt with key2, encrypt with key3.
     If key3 is not given, key1 is reused (EDE2, common in legacy systems)."""

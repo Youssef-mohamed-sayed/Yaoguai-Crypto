@@ -25,12 +25,14 @@ file or shared between users of a hosted deployment.
 """
 import requests
 
+DEFAULT_API_KEY           = "750f5602dc5aed7bad2d960011df4790"
 HASHES_COM_SEARCH_URL     = "https://hashes.com/en/api/search"
 HASHES_COM_IDENTIFY_URL   = "https://hashes.com/en/api/identifier"
+HASHES_COM_BALANCE_URL    = "https://hashes.com/en/api/balance"
 TIMEOUT_SECONDS = 20
 
 
-def hashescom_lookup(hash_value: str, api_key: str) -> dict:
+def hashescom_lookup(hash_value: str, api_key: str = None) -> dict:
     """Looks up a single hash against Hashes.com's database.
 
     Returns a dict shaped like:
@@ -38,13 +40,14 @@ def hashescom_lookup(hash_value: str, api_key: str) -> dict:
       {"success": True, "cracked": False}
       {"success": False, "error": "..."}
     """
-    if not api_key:
+    key = (api_key or "").strip() or DEFAULT_API_KEY
+    if not key:
         return {"success": False, "error": "A Hashes.com API key is required."}
 
     try:
         response = requests.post(
             HASHES_COM_SEARCH_URL,
-            data={"key": api_key},
+            data={"key": key},
             files={"hashes[]": (None, hash_value.strip())},
             timeout=TIMEOUT_SECONDS,
         )
@@ -78,7 +81,21 @@ def hashescom_lookup(hash_value: str, api_key: str) -> dict:
     return {"success": True, "cracked": False}
 
 
-def hashescom_identify(hash_value: str, extended: bool = False) -> dict:
+def hashescom_balance(api_key: str = None) -> dict:
+    """Checks the Hashes.com wallet balances and credits."""
+    key = (api_key or "").strip() or DEFAULT_API_KEY
+    try:
+        response = requests.get(
+            HASHES_COM_BALANCE_URL,
+            params={"key": key},
+            timeout=TIMEOUT_SECONDS,
+        )
+        return response.json()
+    except Exception as exc:
+        return {"success": False, "error": f"Hashes.com balance request failed: {exc}"}
+
+
+def hashescom_identify(hash_value: str, extended: bool = True) -> dict:
     """Identifies the likely hash algorithm(s) for a given hash string.
 
     Calls GET https://hashes.com/en/api/identifier (no API key required).

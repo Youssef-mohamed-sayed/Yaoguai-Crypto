@@ -104,9 +104,11 @@ const CryptoAPI = {
     john:     (hash, hashType, wordlist) => apiPost("/api/crack/john",    { hash, hash_type: hashType, wordlist }),
     hashcat:  (hash, hashType, wordlist) => apiPost("/api/crack/hashcat", { hash, hash_type: hashType, wordlist }),
     hashescom: (hash, apiKey) => apiPost("/api/hashescom", { hash, api_key: apiKey }),
+    hashescomBalance: (apiKey) => apiPost("/api/hashescom/balance", { api_key: apiKey }),
     hashescomIdentify: (hash, extended) => apiPost("/api/hashescom/identify", { hash, extended: extended ? "true" : "false" }),
   },
   file: {
+    transform:     (formData) => apiFetch("/api/file/transform",      formData),
     encryptDES:    (formData) => apiFetch("/api/file/encrypt/des",    formData),
     decryptDES:    (formData) => apiFetch("/api/file/decrypt/des",    formData),
     encryptHybrid: (formData) => apiFetch("/api/file/encrypt/hybrid", formData),

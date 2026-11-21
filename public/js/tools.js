@@ -72,24 +72,24 @@ const TOOLS = [
 
   { group: "Cracking" },
   { id: "crack", name: "Crack a hash", custom: "crack",
-    desc: "Tries every word in this app's small sample wordlist against the hash, looks it up in Hashes.com's crowd-sourced database, or identifies the hash algorithm — all via the official Hashes.com API (hashes.com/en/api).",
-    params: [ { id: "hash_type", label: "Hash type", type: "select", options: [["md5","MD5"],["sha1","SHA-1"],["sha256","SHA-256"]] } ],
+    desc: "Tries words from the sample wordlist against the hash, looks it up in Hashes.com's crowd-sourced database, or automatically identifies unknown hash algorithms.",
     modes: [
-      { name: "Crack (sample wordlist)", endpoint: "/api/crack/wordlist", run: (i, p) => T.crack.wordlist(i.trim(), p.hash_type)
+      { name: "Crack (sample wordlist)", endpoint: "/api/crack/wordlist",
+        params: [ { id: "hash_type", label: "Hash type", type: "select", options: [["md5","MD5"],["sha1","SHA-1"],["sha256","SHA-256"]] } ],
+        run: (i, p) => T.crack.wordlist(i.trim(), p.hash_type)
         .then(r => r.cracked
           ? `✓ cracked after trying ${r.tried} word${r.tried === 1 ? "" : "s"}\n\npassword: ${r.password}`
           : `✗ not in this app's ${r.tried}-word sample list.\nTry the Hashes.com mode above, or a full wordlist with John/Hashcat.`) },
       { name: "Crack (Hashes.com)", endpoint: "/api/hashescom",
-        params: [ { id: "hashescom_key", label: "Hashes.com API key", placeholder: "from hashes.com/en/api", persist: true } ],
-        run: (i, p) => T.crack.hashescom(i.trim(), p.hashescom_key)
+        params: [ { id: "hashescom_key", label: "Hashes.com API key", value: "750f5602dc5aed7bad2d960011df4790", placeholder: "750f5602dc5aed7bad2d960011df4790", persist: true } ],
+        run: (i, p) => T.crack.hashescom(i.trim(), p.hashescom_key || "750f5602dc5aed7bad2d960011df4790")
           .then(r => r.cracked
             ? `✓ found in Hashes.com's database\n\npassword: ${r.password}\nalgorithm: ${r.algorithm}${r.salt ? `\nsalt: ${r.salt}` : ""}`
             : "✗ not found in Hashes.com's database.\nThat only rules out hashes someone has already cracked before — it says nothing about a genuinely strong, never-leaked password.") },
       { name: "Identify algorithm", endpoint: "/api/hashescom/identify",
-        params: [ { id: "identify_extended", label: "Extended results", type: "select", options: [["false","No (common algorithms)"],["true","Yes (all possible algorithms)"]] } ],
-        run: (i, p) => T.crack.hashescomIdentify(i.trim(), p.identify_extended === "true")
+        run: (i) => T.crack.hashescomIdentify(i.trim(), true)
           .then(r => r.algorithms && r.algorithms.length
-            ? `Possible algorithm(s):\n\n${r.algorithms.map((a, idx) => `  ${idx + 1}. ${a}`).join("\n")}`
+            ? `Identified Algorithm(s):\n\n${r.algorithms.map((a, idx) => `  ${idx + 1}. ${a}`).join("\n")}`
             : "Could not identify algorithm — hash format unrecognised by Hashes.com.") },
     ] },
 
@@ -130,7 +130,10 @@ function renderFileEncryptUI() {
   els.params.innerHTML = "";
   els.params.style.display = "";
 
-  const algo = state.fileEncryptAlgo || "des";
+  const cat = state.fileEncCat || "encrypt"; // "encrypt", "encode", "hash"
+  const encAlgo = state.fileEncAlgo || "des";
+  const encodeAlgo = state.fileEncodeAlgo || "base64";
+  const hashAlgo = state.fileHashAlgo || "sha256";
 
   const container = document.createElement("div");
   container.className = "param-full";
@@ -139,46 +142,106 @@ function renderFileEncryptUI() {
   container.style.gap = "16px";
   container.style.width = "100%";
 
-  // 1. Algorithm tabs
-  const tabWrap = document.createElement("div");
-  const tabLabel = document.createElement("label");
-  tabLabel.textContent = "Encryption Algorithm";
-  tabLabel.style.display = "block";
-  tabLabel.style.marginBottom = "6px";
-  tabLabel.style.fontSize = "12.5px";
-  tabLabel.style.color = "var(--paper-dim)";
+  // 1. Category Switch
+  const catWrap = document.createElement("div");
+  const catLabel = document.createElement("label");
+  catLabel.textContent = "Operation Category";
+  catLabel.style.display = "block";
+  catLabel.style.marginBottom = "6px";
+  catLabel.style.fontSize = "12.5px";
+  catLabel.style.color = "var(--paper-dim)";
 
-  const modeSwitch = document.createElement("div");
-  modeSwitch.className = "mode-switch";
-  modeSwitch.setAttribute("role", "tablist");
+  const catSwitch = document.createElement("div");
+  catSwitch.className = "mode-switch";
+  catSwitch.setAttribute("role", "tablist");
 
-  const btnDes = document.createElement("button");
-  btnDes.type = "button";
-  btnDes.textContent = "DES";
-  btnDes.className = algo === "des" ? "on" : "";
+  const catButtons = [
+    { id: "encrypt", label: "Encryption" },
+    { id: "encode", label: "Encoding" },
+    { id: "hash", label: "Hashing" },
+  ];
 
-  const btnHybrid = document.createElement("button");
-  btnHybrid.type = "button";
-  btnHybrid.textContent = "Hybrid RSA+DES";
-  btnHybrid.className = algo === "hybrid" ? "on" : "";
-
-  btnDes.addEventListener("click", () => {
-    state.fileEncryptAlgo = "des";
-    renderFileEncryptUI();
+  catButtons.forEach(c => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = c.label;
+    btn.className = cat === c.id ? "on" : "";
+    btn.addEventListener("click", () => {
+      state.fileEncCat = c.id;
+      renderFileEncryptUI();
+    });
+    catSwitch.appendChild(btn);
   });
-  btnHybrid.addEventListener("click", () => {
-    state.fileEncryptAlgo = "hybrid";
-    renderFileEncryptUI();
+
+  catWrap.append(catLabel, catSwitch);
+  container.appendChild(catWrap);
+
+  // 2. Algorithm Selector
+  const algoWrap = document.createElement("div");
+  const algoLabel = document.createElement("label");
+  algoLabel.textContent = "Algorithm";
+  algoLabel.style.display = "block";
+  algoLabel.style.marginBottom = "6px";
+  algoLabel.style.fontSize = "12.5px";
+  algoLabel.style.color = "var(--paper-dim)";
+
+  const algoSwitch = document.createElement("div");
+  algoSwitch.className = "mode-switch";
+  algoSwitch.style.flexWrap = "wrap";
+  algoSwitch.setAttribute("role", "tablist");
+
+  let activeAlgo = encAlgo;
+  let algoList = [];
+
+  if (cat === "encrypt") {
+    activeAlgo = encAlgo;
+    algoList = [
+      { id: "des", label: "DES" },
+      { id: "aes", label: "AES-128" },
+      { id: "3des", label: "Triple DES" },
+      { id: "rc4", label: "RC4" },
+      { id: "xor", label: "XOR" },
+      { id: "hybrid", label: "Hybrid RSA+DES" },
+    ];
+  } else if (cat === "encode") {
+    activeAlgo = encodeAlgo;
+    algoList = [
+      { id: "base64", label: "Base64" },
+      { id: "hex", label: "Hexadecimal" },
+      { id: "ascii", label: "ASCII codes" },
+      { id: "url", label: "URL encoding" },
+    ];
+  } else {
+    activeAlgo = hashAlgo;
+    algoList = [
+      { id: "md5", label: "MD5" },
+      { id: "sha1", label: "SHA-1" },
+      { id: "sha256", label: "SHA-256" },
+      { id: "bcrypt", label: "bcrypt" },
+    ];
+  }
+
+  algoList.forEach(a => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = a.label;
+    btn.className = activeAlgo === a.id ? "on" : "";
+    btn.addEventListener("click", () => {
+      if (cat === "encrypt") state.fileEncAlgo = a.id;
+      else if (cat === "encode") state.fileEncodeAlgo = a.id;
+      else state.fileHashAlgo = a.id;
+      renderFileEncryptUI();
+    });
+    algoSwitch.appendChild(btn);
   });
 
-  modeSwitch.append(btnDes, btnHybrid);
-  tabWrap.append(tabLabel, modeSwitch);
-  container.appendChild(tabWrap);
+  algoWrap.append(algoLabel, algoSwitch);
+  container.appendChild(algoWrap);
 
-  // 2. File input
+  // 3. File Input
   const fileWrap = document.createElement("div");
   const fileLabel = document.createElement("label");
-  fileLabel.textContent = "Select .txt file to encrypt (max 1 MB)";
+  fileLabel.textContent = "Select file to process (max 1 MB)";
   fileLabel.style.display = "block";
   fileLabel.style.marginBottom = "6px";
   fileLabel.style.fontSize = "12.5px";
@@ -187,7 +250,7 @@ function renderFileEncryptUI() {
   const fileInput = document.createElement("input");
   fileInput.type = "file";
   fileInput.id = "file-upload";
-  fileInput.accept = ".txt";
+  fileInput.accept = ".txt,*/*";
 
   const fileInfo = document.createElement("div");
   fileInfo.style.fontSize = "13px";
@@ -198,7 +261,7 @@ function renderFileEncryptUI() {
     const f = fileInput.files[0];
     if (f) {
       fileInfo.textContent = `Selected: ${f.name} (${(f.size / 1024).toFixed(1)} KB)`;
-      fileInfo.style.color = f.name.toLowerCase().endsWith(".txt") ? "var(--ok, #4ade80)" : "var(--bad, #f87171)";
+      fileInfo.style.color = "var(--ok, #4ade80)";
     } else {
       fileInfo.textContent = "";
     }
@@ -207,74 +270,98 @@ function renderFileEncryptUI() {
   fileWrap.append(fileLabel, fileInput, fileInfo);
   container.appendChild(fileWrap);
 
-  // 3. Algorithm-specific inputs
-  if (algo === "des") {
-    const keyWrap = document.createElement("div");
-    const keyLabel = document.createElement("label");
-    keyLabel.textContent = "Secret Key (DES 8-byte key)";
-    keyLabel.style.display = "block";
-    keyLabel.style.marginBottom = "6px";
-    keyLabel.style.fontSize = "12.5px";
-    keyLabel.style.color = "var(--paper-dim)";
-
-    const keyInp = document.createElement("input");
-    keyInp.type = "text";
-    keyInp.id = "file-des-key";
-    keyInp.placeholder = "e.g. secret8k";
-    keyInp.spellcheck = false;
-    keyInp.value = state.fileDesKey || "";
-    keyInp.addEventListener("input", () => { state.fileDesKey = keyInp.value; });
-
-    keyWrap.append(keyLabel, keyInp);
-    container.appendChild(keyWrap);
+  // 4. Algorithm-specific input fields
+  if (cat === "encrypt") {
+    if (activeAlgo === "des") {
+      const w = document.createElement("div");
+      w.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Secret Key (DES 8-byte key)</label>
+      <input type="text" id="file-key" placeholder="e.g. secret8k" spellcheck="false" value="${state.fileDesKey || ""}">`;
+      const inp = w.querySelector("input");
+      inp.addEventListener("input", () => { state.fileDesKey = inp.value; });
+      container.appendChild(w);
+    } else if (activeAlgo === "aes") {
+      const w = document.createElement("div");
+      w.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Secret Key (AES 16-byte key)</label>
+      <input type="text" id="file-key" placeholder="e.g. secret16bytekey!" spellcheck="false" value="${state.fileAesKey || ""}">`;
+      const inp = w.querySelector("input");
+      inp.addEventListener("input", () => { state.fileAesKey = inp.value; });
+      container.appendChild(w);
+    } else if (activeAlgo === "3des") {
+      const w = document.createElement("div");
+      w.style.display = "grid";
+      w.style.gridTemplateColumns = "repeat(auto-fit, minmax(200px, 1fr))";
+      w.style.gap = "10px";
+      w.innerHTML = `
+        <div><label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Key 1</label>
+        <input type="text" id="file-k1" placeholder="first key" spellcheck="false" value="${state.file3DesK1 || ""}"></div>
+        <div><label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Key 2</label>
+        <input type="text" id="file-k2" placeholder="second key" spellcheck="false" value="${state.file3DesK2 || ""}"></div>
+        <div><label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Key 3 (optional)</label>
+        <input type="text" id="file-k3" placeholder="optional third key" spellcheck="false" value="${state.file3DesK3 || ""}"></div>
+      `;
+      w.querySelector("#file-k1").addEventListener("input", (e) => { state.file3DesK1 = e.target.value; });
+      w.querySelector("#file-k2").addEventListener("input", (e) => { state.file3DesK2 = e.target.value; });
+      w.querySelector("#file-k3").addEventListener("input", (e) => { state.file3DesK3 = e.target.value; });
+      container.appendChild(w);
+    } else if (activeAlgo === "rc4") {
+      const w = document.createElement("div");
+      w.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Secret Key (RC4 stream key)</label>
+      <input type="text" id="file-key" placeholder="stream cipher key" spellcheck="false" value="${state.fileRc4Key || ""}">`;
+      const inp = w.querySelector("input");
+      inp.addEventListener("input", () => { state.fileRc4Key = inp.value; });
+      container.appendChild(w);
+    } else if (activeAlgo === "xor") {
+      const w = document.createElement("div");
+      w.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Secret Key (XOR key)</label>
+      <input type="text" id="file-key" placeholder="repeating xor key" spellcheck="false" value="${state.fileXorKey || ""}">`;
+      const inp = w.querySelector("input");
+      inp.addEventListener("input", () => { state.fileXorKey = inp.value; });
+      container.appendChild(w);
+    } else if (activeAlgo === "hybrid") {
+      const w = document.createElement("div");
+      w.style.display = "flex";
+      w.style.flexDirection = "column";
+      w.style.gap = "10px";
+      w.innerHTML = `
+        <div>
+          <label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">RSA Modulus (n) — generate with RSA tool</label>
+          <textarea id="file-rsa-n" rows="2" placeholder="paste RSA modulus n (decimal integer)" spellcheck="false">${state.fileRsaN || ""}</textarea>
+        </div>
+        <div>
+          <label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">RSA Public Exponent (e)</label>
+          <input type="text" id="file-rsa-e" placeholder="65537" spellcheck="false" value="${state.fileRsaE || "65537"}">
+          <div style="font-size:12px;margin-top:4px;color:var(--paper-dim)">💡 Tip: Switch to the RSA tool in the sidebar to generate a 256-bit or 512-bit key pair.</div>
+        </div>
+      `;
+      w.querySelector("#file-rsa-n").addEventListener("input", (e) => { state.fileRsaN = e.target.value; });
+      w.querySelector("#file-rsa-e").addEventListener("input", (e) => { state.fileRsaE = e.target.value; });
+      container.appendChild(w);
+    }
+  } else if (cat === "encode") {
+    const info = document.createElement("div");
+    info.style.fontSize = "12.5px";
+    info.style.color = "var(--paper-dim)";
+    info.textContent = `ℹ️ ${activeAlgo.toUpperCase()} encoding transforms raw file bytes into text representation. No secret key needed.`;
+    container.appendChild(info);
   } else {
-    // Hybrid: n and e
-    const nWrap = document.createElement("div");
-    const nLabel = document.createElement("label");
-    nLabel.textContent = "RSA Modulus (n) — generate with RSA tool";
-    nLabel.style.display = "block";
-    nLabel.style.marginBottom = "6px";
-    nLabel.style.fontSize = "12.5px";
-    nLabel.style.color = "var(--paper-dim)";
-
-    const nInp = document.createElement("textarea");
-    nInp.id = "file-rsa-n";
-    nInp.rows = 2;
-    nInp.placeholder = "paste RSA modulus n (decimal integer)";
-    nInp.spellcheck = false;
-    nInp.value = state.fileRsaN || "";
-    nInp.addEventListener("input", () => { state.fileRsaN = nInp.value; });
-
-    nWrap.append(nLabel, nInp);
-    container.appendChild(nWrap);
-
-    const eWrap = document.createElement("div");
-    const eLabel = document.createElement("label");
-    eLabel.textContent = "RSA Public Exponent (e)";
-    eLabel.style.display = "block";
-    eLabel.style.marginBottom = "6px";
-    eLabel.style.fontSize = "12.5px";
-    eLabel.style.color = "var(--paper-dim)";
-
-    const eInp = document.createElement("input");
-    eInp.type = "text";
-    eInp.id = "file-rsa-e";
-    eInp.placeholder = "65537";
-    eInp.spellcheck = false;
-    eInp.value = state.fileRsaE || "65537";
-    eInp.addEventListener("input", () => { state.fileRsaE = eInp.value; });
-
-    const tip = document.createElement("div");
-    tip.style.fontSize = "12px";
-    tip.style.marginTop = "4px";
-    tip.style.color = "var(--paper-dim)";
-    tip.textContent = "💡 Tip: Switch to the RSA tool in the sidebar to generate a 256-bit or 512-bit key pair.";
-
-    eWrap.append(eLabel, eInp, tip);
-    container.appendChild(eWrap);
+    // Hashing
+    if (activeAlgo === "bcrypt") {
+      const w = document.createElement("div");
+      w.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Cost Factor / Rounds (4–14)</label>
+      <input type="number" id="file-rounds" min="4" max="14" value="${state.fileBcryptRounds || "10"}" style="max-width:140px">`;
+      const inp = w.querySelector("input");
+      inp.addEventListener("input", () => { state.fileBcryptRounds = inp.value; });
+      container.appendChild(w);
+    } else {
+      const info = document.createElement("div");
+      info.style.fontSize = "12.5px";
+      info.style.color = "var(--paper-dim)";
+      info.textContent = `ℹ️ Computes a cryptographic checksum (${activeAlgo.toUpperCase()}) for data integrity auditing. No key required.`;
+      container.appendChild(info);
+    }
   }
 
-  // 4. Action button & status
+  // 5. Action Button & Status
   const actionRow = document.createElement("div");
   actionRow.style.display = "flex";
   actionRow.style.alignItems = "center";
@@ -285,7 +372,7 @@ function renderFileEncryptUI() {
   const runBtn = document.createElement("button");
   runBtn.type = "button";
   runBtn.className = "btn btn-primary";
-  runBtn.textContent = "Encrypt & Download";
+  runBtn.textContent = cat === "hash" ? "Compute Hash" : (cat === "encode" ? "Encode & Download" : "Encrypt & Download");
 
   const statusSpan = document.createElement("span");
   statusSpan.className = "tool-msg";
@@ -293,7 +380,7 @@ function renderFileEncryptUI() {
   actionRow.append(runBtn, statusSpan);
   container.appendChild(actionRow);
 
-  // 5. Success / Session key output card
+  // 6. Result Card (for Hybrid key output or Hash output)
   const resultCard = document.createElement("div");
   resultCard.id = "file-result-card";
   resultCard.style.display = "none";
@@ -305,7 +392,7 @@ function renderFileEncryptUI() {
 
   container.appendChild(resultCard);
 
-  // Run handler
+  // Run Handler
   runBtn.addEventListener("click", async () => {
     resultCard.style.display = "none";
     resultCard.innerHTML = "";
@@ -318,11 +405,6 @@ function renderFileEncryptUI() {
       statusSpan.className = "tool-msg bad";
       return;
     }
-    if (!file.name.toLowerCase().endsWith(".txt")) {
-      statusSpan.textContent = "Only .txt files are supported.";
-      statusSpan.className = "tool-msg bad";
-      return;
-    }
     if (file.size > 1024 * 1024) {
       statusSpan.textContent = "File too large (max 1 MB).";
       statusSpan.className = "tool-msg bad";
@@ -331,48 +413,98 @@ function renderFileEncryptUI() {
 
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("action", cat);
+    formData.append("algo", activeAlgo);
 
-    if (algo === "des") {
-      const key = (state.fileDesKey || "").trim();
-      if (!key) {
-        statusSpan.textContent = "Fill in: Key";
-        statusSpan.className = "tool-msg bad";
-        return;
+    if (cat === "encrypt") {
+      if (activeAlgo === "des") {
+        const k = (state.fileDesKey || "").trim();
+        if (!k) { statusSpan.textContent = "Fill in: Key"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("key", k);
+      } else if (activeAlgo === "aes") {
+        const k = (state.fileAesKey || "").trim();
+        if (!k) { statusSpan.textContent = "Fill in: Key"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("key", k);
+      } else if (activeAlgo === "3des") {
+        const k1 = (state.file3DesK1 || "").trim();
+        const k2 = (state.file3DesK2 || "").trim();
+        const k3 = (state.file3DesK3 || "").trim();
+        if (!k1 || !k2) { statusSpan.textContent = "Fill in: Key 1 and Key 2"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("key1", k1);
+        formData.append("key2", k2);
+        if (k3) formData.append("key3", k3);
+      } else if (activeAlgo === "rc4") {
+        const k = (state.fileRc4Key || "").trim();
+        if (!k) { statusSpan.textContent = "Fill in: Key"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("key", k);
+      } else if (activeAlgo === "xor") {
+        const k = (state.fileXorKey || "").trim();
+        if (!k) { statusSpan.textContent = "Fill in: Key"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("key", k);
+      } else if (activeAlgo === "hybrid") {
+        const n = (state.fileRsaN || "").trim();
+        const e = (state.fileRsaE || "65537").trim();
+        if (!n || !e) { statusSpan.textContent = "Fill in: n and e"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("n", n);
+        formData.append("e", e);
       }
-      formData.append("key", key);
+    } else if (cat === "hash") {
+      if (activeAlgo === "bcrypt") {
+        formData.append("rounds", (state.fileBcryptRounds || "10").trim());
+      }
+    }
 
-      runBtn.disabled = true;
-      statusSpan.textContent = "Encrypting…";
-      statusSpan.className = "tool-msg";
+    runBtn.disabled = true;
+    statusSpan.textContent = cat === "hash" ? "Computing hash…" : "Processing…";
+    statusSpan.className = "tool-msg";
 
-      try {
-        const res = await T.file.encryptDES(formData);
-        statusSpan.textContent = `✓ File encrypted and downloaded: ${res.filename || file.name + ".des.enc"}`;
+    try {
+      const res = await T.file.transform(formData);
+
+      if (cat === "hash") {
+        statusSpan.textContent = `✓ ${res.algo.toUpperCase()} hash computed successfully.`;
         statusSpan.className = "tool-msg ok";
-      } catch (err) {
-        statusSpan.textContent = err.message || "Encryption failed.";
-        statusSpan.className = "tool-msg bad";
-      } finally {
-        runBtn.disabled = false;
-      }
-    } else {
-      // Hybrid
-      const n = (state.fileRsaN || "").trim();
-      const e = (state.fileRsaE || "65537").trim();
-      if (!n || !e) {
-        statusSpan.textContent = "Fill in: n and e";
-        statusSpan.className = "tool-msg bad";
-        return;
-      }
-      formData.append("n", n);
-      formData.append("e", e);
 
-      runBtn.disabled = true;
-      statusSpan.textContent = "Encrypting…";
-      statusSpan.className = "tool-msg";
+        resultCard.style.display = "flex";
+        resultCard.innerHTML = `
+          <div style="font-size:12.5px;color:var(--paper-dim);font-weight:600">
+            ${res.algo.toUpperCase()} Hash:
+          </div>
+          <textarea id="file-hash-out" readonly rows="2" style="font-family:monospace;font-size:13px"></textarea>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button type="button" class="btn btn-ghost btn-sm" id="copy-file-hash-btn">Copy Hash</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="dl-checksum-btn">Download Checksum File</button>
+          </div>
+        `;
+        const hashArea = resultCard.querySelector("#file-hash-out");
+        hashArea.value = res.hash;
 
-      try {
-        const res = await T.file.encryptHybrid(formData);
+        resultCard.querySelector("#copy-file-hash-btn").addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(res.hash);
+            statusSpan.textContent = "✓ Hash copied to clipboard.";
+            statusSpan.className = "tool-msg ok";
+          } catch (_) {
+            hashArea.select();
+            document.execCommand("copy");
+            statusSpan.textContent = "✓ Hash copied.";
+            statusSpan.className = "tool-msg ok";
+          }
+        });
+
+        resultCard.querySelector("#dl-checksum-btn").addEventListener("click", () => {
+          const checksumText = `${res.hash}  ${res.filename}\n`;
+          const blob = new Blob([checksumText], { type: "text/plain;charset=utf-8" });
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = `${res.filename}.${res.algo}`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(a.href);
+        });
+
+      } else if (cat === "encrypt" && activeAlgo === "hybrid") {
         const blob = new Blob([res.encrypted_file_b64], { type: "text/plain;charset=utf-8" });
         const downloadName = (res.original_filename || file.name) + ".hybrid.enc";
         const a = document.createElement("a");
@@ -388,13 +520,13 @@ function renderFileEncryptUI() {
 
         resultCard.style.display = "flex";
         resultCard.innerHTML = `
-          <div style="font-size:12.5px; color:var(--paper-dim); font-weight:600;">
+          <div style="font-size:12.5px;color:var(--paper-dim);font-weight:600">
             Encrypted session key (RSA-wrapped DES key):
           </div>
-          <div style="font-size:12px; color:var(--paper-dim);">
+          <div style="font-size:12px;color:var(--paper-dim)">
             Save this key! You will need it along with your private exponent <code>d</code> and modulus <code>n</code> to decrypt the file.
           </div>
-          <textarea id="file-hybrid-key-out" readonly rows="2" style="font-family:monospace; font-size:13px;"></textarea>
+          <textarea id="file-hybrid-key-out" readonly rows="2" style="font-family:monospace;font-size:13px"></textarea>
           <div>
             <button type="button" class="btn btn-ghost btn-sm" id="copy-session-key-btn">Copy key</button>
           </div>
@@ -413,12 +545,16 @@ function renderFileEncryptUI() {
             statusSpan.className = "tool-msg ok";
           }
         });
-      } catch (err) {
-        statusSpan.textContent = err.message || "Hybrid encryption failed.";
-        statusSpan.className = "tool-msg bad";
-      } finally {
-        runBtn.disabled = false;
+      } else {
+        // Normal file download
+        statusSpan.textContent = `✓ File processed and downloaded: ${res.filename || "file"}`;
+        statusSpan.className = "tool-msg ok";
       }
+    } catch (err) {
+      statusSpan.textContent = err.message || "Operation failed.";
+      statusSpan.className = "tool-msg bad";
+    } finally {
+      runBtn.disabled = false;
     }
   });
 
@@ -429,7 +565,10 @@ function renderFileDecryptUI() {
   els.params.innerHTML = "";
   els.params.style.display = "";
 
-  const algo = state.fileDecryptAlgo || "des";
+  const cat = state.fileDecCat || "decrypt"; // "decrypt", "decode", "verify"
+  const decAlgo = state.fileDecAlgo || "des";
+  const decodeAlgo = state.fileDecodeAlgo || "base64";
+  const verifyAlgo = state.fileVerifyAlgo || "sha256";
 
   const container = document.createElement("div");
   container.className = "param-full";
@@ -438,46 +577,106 @@ function renderFileDecryptUI() {
   container.style.gap = "16px";
   container.style.width = "100%";
 
-  // 1. Algorithm tabs
-  const tabWrap = document.createElement("div");
-  const tabLabel = document.createElement("label");
-  tabLabel.textContent = "Decryption Algorithm";
-  tabLabel.style.display = "block";
-  tabLabel.style.marginBottom = "6px";
-  tabLabel.style.fontSize = "12.5px";
-  tabLabel.style.color = "var(--paper-dim)";
+  // 1. Category Switch
+  const catWrap = document.createElement("div");
+  const catLabel = document.createElement("label");
+  catLabel.textContent = "Operation Category";
+  catLabel.style.display = "block";
+  catLabel.style.marginBottom = "6px";
+  catLabel.style.fontSize = "12.5px";
+  catLabel.style.color = "var(--paper-dim)";
 
-  const modeSwitch = document.createElement("div");
-  modeSwitch.className = "mode-switch";
-  modeSwitch.setAttribute("role", "tablist");
+  const catSwitch = document.createElement("div");
+  catSwitch.className = "mode-switch";
+  catSwitch.setAttribute("role", "tablist");
 
-  const btnDes = document.createElement("button");
-  btnDes.type = "button";
-  btnDes.textContent = "DES";
-  btnDes.className = algo === "des" ? "on" : "";
+  const catButtons = [
+    { id: "decrypt", label: "Decryption" },
+    { id: "decode", label: "Decoding" },
+    { id: "verify", label: "Hash Verify" },
+  ];
 
-  const btnHybrid = document.createElement("button");
-  btnHybrid.type = "button";
-  btnHybrid.textContent = "Hybrid RSA+DES";
-  btnHybrid.className = algo === "hybrid" ? "on" : "";
-
-  btnDes.addEventListener("click", () => {
-    state.fileDecryptAlgo = "des";
-    renderFileDecryptUI();
+  catButtons.forEach(c => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = c.label;
+    btn.className = cat === c.id ? "on" : "";
+    btn.addEventListener("click", () => {
+      state.fileDecCat = c.id;
+      renderFileDecryptUI();
+    });
+    catSwitch.appendChild(btn);
   });
-  btnHybrid.addEventListener("click", () => {
-    state.fileDecryptAlgo = "hybrid";
-    renderFileDecryptUI();
+
+  catWrap.append(catLabel, catSwitch);
+  container.appendChild(catWrap);
+
+  // 2. Algorithm Selector
+  const algoWrap = document.createElement("div");
+  const algoLabel = document.createElement("label");
+  algoLabel.textContent = "Algorithm";
+  algoLabel.style.display = "block";
+  algoLabel.style.marginBottom = "6px";
+  algoLabel.style.fontSize = "12.5px";
+  algoLabel.style.color = "var(--paper-dim)";
+
+  const algoSwitch = document.createElement("div");
+  algoSwitch.className = "mode-switch";
+  algoSwitch.style.flexWrap = "wrap";
+  algoSwitch.setAttribute("role", "tablist");
+
+  let activeAlgo = decAlgo;
+  let algoList = [];
+
+  if (cat === "decrypt") {
+    activeAlgo = decAlgo;
+    algoList = [
+      { id: "des", label: "DES" },
+      { id: "aes", label: "AES-128" },
+      { id: "3des", label: "Triple DES" },
+      { id: "rc4", label: "RC4" },
+      { id: "xor", label: "XOR" },
+      { id: "hybrid", label: "Hybrid RSA+DES" },
+    ];
+  } else if (cat === "decode") {
+    activeAlgo = decodeAlgo;
+    algoList = [
+      { id: "base64", label: "Base64" },
+      { id: "hex", label: "Hexadecimal" },
+      { id: "ascii", label: "ASCII codes" },
+      { id: "url", label: "URL encoding" },
+    ];
+  } else {
+    activeAlgo = verifyAlgo;
+    algoList = [
+      { id: "md5", label: "MD5" },
+      { id: "sha1", label: "SHA-1" },
+      { id: "sha256", label: "SHA-256" },
+      { id: "bcrypt", label: "bcrypt" },
+    ];
+  }
+
+  algoList.forEach(a => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = a.label;
+    btn.className = activeAlgo === a.id ? "on" : "";
+    btn.addEventListener("click", () => {
+      if (cat === "decrypt") state.fileDecAlgo = a.id;
+      else if (cat === "decode") state.fileDecodeAlgo = a.id;
+      else state.fileVerifyAlgo = a.id;
+      renderFileDecryptUI();
+    });
+    algoSwitch.appendChild(btn);
   });
 
-  modeSwitch.append(btnDes, btnHybrid);
-  tabWrap.append(tabLabel, modeSwitch);
-  container.appendChild(tabWrap);
+  algoWrap.append(algoLabel, algoSwitch);
+  container.appendChild(algoWrap);
 
-  // 2. File input
+  // 3. File Input
   const fileWrap = document.createElement("div");
   const fileLabel = document.createElement("label");
-  fileLabel.textContent = "Select encrypted file (.des.enc or .hybrid.enc)";
+  fileLabel.textContent = cat === "verify" ? "Select file to verify checksum" : "Select encrypted or encoded file to restore";
   fileLabel.style.display = "block";
   fileLabel.style.marginBottom = "6px";
   fileLabel.style.fontSize = "12.5px";
@@ -486,7 +685,7 @@ function renderFileDecryptUI() {
   const fileInput = document.createElement("input");
   fileInput.type = "file";
   fileInput.id = "file-upload-dec";
-  fileInput.accept = ".enc,.des.enc,.hybrid.enc,*/*";
+  fileInput.accept = ".enc,.des.enc,.aes.enc,.b64,.hex,.ascii,.url,*/*";
 
   const fileInfo = document.createElement("div");
   fileInfo.style.fontSize = "13px";
@@ -500,9 +699,13 @@ function renderFileDecryptUI() {
       const origInp = document.getElementById("file-dec-orig-name");
       if (origInp && !origInp.value.trim()) {
         let suggested = f.name;
-        if (suggested.endsWith(".des.enc")) suggested = suggested.slice(0, -8);
-        else if (suggested.endsWith(".hybrid.enc")) suggested = suggested.slice(0, -11);
-        else if (suggested.endsWith(".enc")) suggested = suggested.slice(0, -4);
+        const suffixes = [".des.enc", ".aes.enc", ".3des.enc", ".rc4.enc", ".xor.enc", ".hybrid.enc", ".b64", ".hex", ".ascii", ".url", ".enc"];
+        for (const s of suffixes) {
+          if (suggested.endsWith(s)) {
+            suggested = suggested.slice(0, -s.length);
+            break;
+          }
+        }
         origInp.value = suggested;
         state.fileDecOrigName = suggested;
       }
@@ -514,107 +717,103 @@ function renderFileDecryptUI() {
   fileWrap.append(fileLabel, fileInput, fileInfo);
   container.appendChild(fileWrap);
 
-  // 3. Algorithm-specific inputs
-  if (algo === "des") {
-    const keyWrap = document.createElement("div");
-    const keyLabel = document.createElement("label");
-    keyLabel.textContent = "Secret Key (same key used for encryption)";
-    keyLabel.style.display = "block";
-    keyLabel.style.marginBottom = "6px";
-    keyLabel.style.fontSize = "12.5px";
-    keyLabel.style.color = "var(--paper-dim)";
-
-    const keyInp = document.createElement("input");
-    keyInp.type = "text";
-    keyInp.id = "file-dec-des-key";
-    keyInp.placeholder = "e.g. secret8k";
-    keyInp.spellcheck = false;
-    keyInp.value = state.fileDecDesKey || "";
-    keyInp.addEventListener("input", () => { state.fileDecDesKey = keyInp.value; });
-
-    keyWrap.append(keyLabel, keyInp);
-    container.appendChild(keyWrap);
+  // 4. Algorithm-specific input fields
+  if (cat === "decrypt") {
+    if (activeAlgo === "des") {
+      const w = document.createElement("div");
+      w.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Secret Key (DES key)</label>
+      <input type="text" id="file-dec-key" placeholder="same key used for encryption" spellcheck="false" value="${state.fileDecDesKey || ""}">`;
+      const inp = w.querySelector("input");
+      inp.addEventListener("input", () => { state.fileDecDesKey = inp.value; });
+      container.appendChild(w);
+    } else if (activeAlgo === "aes") {
+      const w = document.createElement("div");
+      w.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Secret Key (AES 16-byte key)</label>
+      <input type="text" id="file-dec-key" placeholder="same key used for encryption" spellcheck="false" value="${state.fileDecAesKey || ""}">`;
+      const inp = w.querySelector("input");
+      inp.addEventListener("input", () => { state.fileDecAesKey = inp.value; });
+      container.appendChild(w);
+    } else if (activeAlgo === "3des") {
+      const w = document.createElement("div");
+      w.style.display = "grid";
+      w.style.gridTemplateColumns = "repeat(auto-fit, minmax(200px, 1fr))";
+      w.style.gap = "10px";
+      w.innerHTML = `
+        <div><label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Key 1</label>
+        <input type="text" id="file-dec-k1" placeholder="first key" spellcheck="false" value="${state.fileDec3DesK1 || ""}"></div>
+        <div><label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Key 2</label>
+        <input type="text" id="file-dec-k2" placeholder="second key" spellcheck="false" value="${state.fileDec3DesK2 || ""}"></div>
+        <div><label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Key 3 (optional)</label>
+        <input type="text" id="file-dec-k3" placeholder="optional third key" spellcheck="false" value="${state.fileDec3DesK3 || ""}"></div>
+      `;
+      w.querySelector("#file-dec-k1").addEventListener("input", (e) => { state.fileDec3DesK1 = e.target.value; });
+      w.querySelector("#file-dec-k2").addEventListener("input", (e) => { state.fileDec3DesK2 = e.target.value; });
+      w.querySelector("#file-dec-k3").addEventListener("input", (e) => { state.fileDec3DesK3 = e.target.value; });
+      container.appendChild(w);
+    } else if (activeAlgo === "rc4") {
+      const w = document.createElement("div");
+      w.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Secret Key (RC4 key)</label>
+      <input type="text" id="file-dec-key" placeholder="same key used for encryption" spellcheck="false" value="${state.fileDecRc4Key || ""}">`;
+      const inp = w.querySelector("input");
+      inp.addEventListener("input", () => { state.fileDecRc4Key = inp.value; });
+      container.appendChild(w);
+    } else if (activeAlgo === "xor") {
+      const w = document.createElement("div");
+      w.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Secret Key (XOR key)</label>
+      <input type="text" id="file-dec-key" placeholder="same key used for encryption" spellcheck="false" value="${state.fileDecXorKey || ""}">`;
+      const inp = w.querySelector("input");
+      inp.addEventListener("input", () => { state.fileDecXorKey = inp.value; });
+      container.appendChild(w);
+    } else if (activeAlgo === "hybrid") {
+      const w = document.createElement("div");
+      w.style.display = "flex";
+      w.style.flexDirection = "column";
+      w.style.gap = "10px";
+      w.innerHTML = `
+        <div>
+          <label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Encrypted Session Key (decimal string from encrypt)</label>
+          <textarea id="file-dec-session-key" rows="2" placeholder="paste encrypted session key" spellcheck="false">${state.fileDecSessionKey || ""}</textarea>
+        </div>
+        <div>
+          <label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">RSA Private Exponent (d)</label>
+          <textarea id="file-dec-d" rows="2" placeholder="paste RSA private exponent d" spellcheck="false">${state.fileDecD || ""}</textarea>
+        </div>
+        <div>
+          <label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">RSA Modulus (n)</label>
+          <textarea id="file-dec-n" rows="2" placeholder="paste RSA modulus n" spellcheck="false">${state.fileDecN || ""}</textarea>
+        </div>
+      `;
+      w.querySelector("#file-dec-session-key").addEventListener("input", (e) => { state.fileDecSessionKey = e.target.value; });
+      w.querySelector("#file-dec-d").addEventListener("input", (e) => { state.fileDecD = e.target.value; });
+      w.querySelector("#file-dec-n").addEventListener("input", (e) => { state.fileDecN = e.target.value; });
+      container.appendChild(w);
+    }
+  } else if (cat === "decode") {
+    const info = document.createElement("div");
+    info.style.fontSize = "12.5px";
+    info.style.color = "var(--paper-dim)";
+    info.textContent = `ℹ️ Reverses ${activeAlgo.toUpperCase()} encoding back to the original file bytes.`;
+    container.appendChild(info);
   } else {
-    // Hybrid: encrypted session key, d, n
-    const keyWrap = document.createElement("div");
-    const keyLabel = document.createElement("label");
-    keyLabel.textContent = "Encrypted Session Key (decimal string from encrypt)";
-    keyLabel.style.display = "block";
-    keyLabel.style.marginBottom = "6px";
-    keyLabel.style.fontSize = "12.5px";
-    keyLabel.style.color = "var(--paper-dim)";
-
-    const keyInp = document.createElement("textarea");
-    keyInp.id = "file-dec-session-key";
-    keyInp.rows = 2;
-    keyInp.placeholder = "paste encrypted session key";
-    keyInp.spellcheck = false;
-    keyInp.value = state.fileDecSessionKey || "";
-    keyInp.addEventListener("input", () => { state.fileDecSessionKey = keyInp.value; });
-
-    keyWrap.append(keyLabel, keyInp);
-    container.appendChild(keyWrap);
-
-    const dWrap = document.createElement("div");
-    const dLabel = document.createElement("label");
-    dLabel.textContent = "RSA Private Exponent (d)";
-    dLabel.style.display = "block";
-    dLabel.style.marginBottom = "6px";
-    dLabel.style.fontSize = "12.5px";
-    dLabel.style.color = "var(--paper-dim)";
-
-    const dInp = document.createElement("textarea");
-    dInp.id = "file-dec-d";
-    dInp.rows = 2;
-    dInp.placeholder = "paste RSA private exponent d";
-    dInp.spellcheck = false;
-    dInp.value = state.fileDecD || "";
-    dInp.addEventListener("input", () => { state.fileDecD = dInp.value; });
-
-    dWrap.append(dLabel, dInp);
-    container.appendChild(dWrap);
-
-    const nWrap = document.createElement("div");
-    const nLabel = document.createElement("label");
-    nLabel.textContent = "RSA Modulus (n)";
-    nLabel.style.display = "block";
-    nLabel.style.marginBottom = "6px";
-    nLabel.style.fontSize = "12.5px";
-    nLabel.style.color = "var(--paper-dim)";
-
-    const nInp = document.createElement("textarea");
-    nInp.id = "file-dec-n";
-    nInp.rows = 2;
-    nInp.placeholder = "paste RSA modulus n";
-    nInp.spellcheck = false;
-    nInp.value = state.fileDecN || "";
-    nInp.addEventListener("input", () => { state.fileDecN = nInp.value; });
-
-    nWrap.append(nLabel, nInp);
-    container.appendChild(nWrap);
+    // Hash Verify
+    const w = document.createElement("div");
+    w.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Expected ${activeAlgo.toUpperCase()} Checksum / Hash</label>
+    <input type="text" id="file-expected-hash" placeholder="paste expected hash here" spellcheck="false" value="${state.fileExpectedHash || ""}">`;
+    const inp = w.querySelector("input");
+    inp.addEventListener("input", () => { state.fileExpectedHash = inp.value; });
+    container.appendChild(w);
   }
 
-  // Original filename input
-  const origWrap = document.createElement("div");
-  const origLabel = document.createElement("label");
-  origLabel.textContent = "Original Filename (to save as)";
-  origLabel.style.display = "block";
-  origLabel.style.marginBottom = "6px";
-  origLabel.style.fontSize = "12.5px";
-  origLabel.style.color = "var(--paper-dim)";
+  // Original Filename input (for decrypt & decode)
+  if (cat !== "verify") {
+    const origWrap = document.createElement("div");
+    origWrap.innerHTML = `<label style="display:block;margin-bottom:6px;font-size:12.5px;color:var(--paper-dim)">Original Filename (to save as)</label>
+    <input type="text" id="file-dec-orig-name" placeholder="notes.txt" spellcheck="false" value="${state.fileDecOrigName || ""}">`;
+    origWrap.querySelector("input").addEventListener("input", (e) => { state.fileDecOrigName = e.target.value; });
+    container.appendChild(origWrap);
+  }
 
-  const origInp = document.createElement("input");
-  origInp.type = "text";
-  origInp.id = "file-dec-orig-name";
-  origInp.placeholder = "notes.txt";
-  origInp.spellcheck = false;
-  origInp.value = state.fileDecOrigName || "";
-  origInp.addEventListener("input", () => { state.fileDecOrigName = origInp.value; });
-
-  origWrap.append(origLabel, origInp);
-  container.appendChild(origWrap);
-
-  // Action button & status
+  // 5. Action Button & Status
   const actionRow = document.createElement("div");
   actionRow.style.display = "flex";
   actionRow.style.alignItems = "center";
@@ -625,7 +824,7 @@ function renderFileDecryptUI() {
   const runBtn = document.createElement("button");
   runBtn.type = "button";
   runBtn.className = "btn btn-primary";
-  runBtn.textContent = "Decrypt & Download";
+  runBtn.textContent = cat === "verify" ? "Verify Checksum" : (cat === "decode" ? "Decode & Download" : "Decrypt & Download");
 
   const statusSpan = document.createElement("span");
   statusSpan.className = "tool-msg";
@@ -633,7 +832,7 @@ function renderFileDecryptUI() {
   actionRow.append(runBtn, statusSpan);
   container.appendChild(actionRow);
 
-  // Decrypt handler
+  // Run Handler
   runBtn.addEventListener("click", async () => {
     statusSpan.textContent = "";
     statusSpan.className = "tool-msg";
@@ -650,82 +849,86 @@ function renderFileDecryptUI() {
       return;
     }
 
-    const origName = (origInp.value || "").trim() || "decrypted.txt";
+    const origNameInput = document.getElementById("file-dec-orig-name");
+    const origName = (origNameInput ? origNameInput.value : "").trim() || "restored_file.txt";
 
-    if (algo === "des") {
-      const key = (state.fileDecDesKey || "").trim();
-      if (!key) {
-        statusSpan.textContent = "Fill in: Key";
-        statusSpan.className = "tool-msg bad";
-        return;
-      }
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("action", cat);
+    formData.append("algo", activeAlgo);
+    formData.append("original_filename", origName);
 
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("key", key);
-      formData.append("original_filename", origName);
-
-      runBtn.disabled = true;
-      statusSpan.textContent = "Decrypting…";
-      statusSpan.className = "tool-msg";
-
-      try {
-        const res = await T.file.decryptDES(formData);
-        statusSpan.textContent = `✓ File decrypted and downloaded: ${res.filename || origName}`;
-        statusSpan.className = "tool-msg ok";
-      } catch (err) {
-        statusSpan.textContent = err.message || "Decryption failed.";
-        statusSpan.className = "tool-msg bad";
-      } finally {
-        runBtn.disabled = false;
-      }
-    } else {
-      // Hybrid
-      const encKey = (state.fileDecSessionKey || "").trim();
-      const d = (state.fileDecD || "").trim();
-      const n = (state.fileDecN || "").trim();
-      if (!encKey || !d || !n) {
-        statusSpan.textContent = "Fill in: Encrypted session key, d, and n";
-        statusSpan.className = "tool-msg bad";
-        return;
-      }
-
-      runBtn.disabled = true;
-      statusSpan.textContent = "Decrypting…";
-      statusSpan.className = "tool-msg";
-
-      try {
-        const fileText = await file.text();
-        let b64 = fileText.trim();
-        try {
-          atob(b64);
-        } catch (_) {
-          const buf = await file.arrayBuffer();
-          let binary = "";
-          const bytes = new Uint8Array(buf);
-          for (let i = 0; i < bytes.byteLength; i++) {
-            binary += String.fromCharCode(bytes[i]);
-          }
-          b64 = btoa(binary);
+    if (cat === "decrypt") {
+      if (activeAlgo === "des") {
+        const k = (state.fileDecDesKey || "").trim();
+        if (!k) { statusSpan.textContent = "Fill in: Key"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("key", k);
+      } else if (activeAlgo === "aes") {
+        const k = (state.fileDecAesKey || "").trim();
+        if (!k) { statusSpan.textContent = "Fill in: Key"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("key", k);
+      } else if (activeAlgo === "3des") {
+        const k1 = (state.fileDec3DesK1 || "").trim();
+        const k2 = (state.fileDec3DesK2 || "").trim();
+        const k3 = (state.fileDec3DesK3 || "").trim();
+        if (!k1 || !k2) { statusSpan.textContent = "Fill in: Key 1 and Key 2"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("key1", k1);
+        formData.append("key2", k2);
+        if (k3) formData.append("key3", k3);
+      } else if (activeAlgo === "rc4") {
+        const k = (state.fileDecRc4Key || "").trim();
+        if (!k) { statusSpan.textContent = "Fill in: Key"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("key", k);
+      } else if (activeAlgo === "xor") {
+        const k = (state.fileDecXorKey || "").trim();
+        if (!k) { statusSpan.textContent = "Fill in: Key"; statusSpan.className = "tool-msg bad"; return; }
+        formData.append("key", k);
+      } else if (activeAlgo === "hybrid") {
+        const encKey = (state.fileDecSessionKey || "").trim();
+        const d = (state.fileDecD || "").trim();
+        const n = (state.fileDecN || "").trim();
+        if (!encKey || !d || !n) {
+          statusSpan.textContent = "Fill in: Encrypted session key, d, and n";
+          statusSpan.className = "tool-msg bad";
+          return;
         }
-
-        const payload = {
-          encrypted_file_b64: b64,
-          encrypted_key: encKey,
-          d: d,
-          n: n,
-          original_filename: origName,
-        };
-
-        const res = await T.file.decryptHybrid(payload);
-        statusSpan.textContent = `✓ File decrypted and downloaded: ${res.filename || origName}`;
-        statusSpan.className = "tool-msg ok";
-      } catch (err) {
-        statusSpan.textContent = err.message || "Hybrid decryption failed.";
-        statusSpan.className = "tool-msg bad";
-      } finally {
-        runBtn.disabled = false;
+        formData.append("encrypted_key", encKey);
+        formData.append("d", d);
+        formData.append("n", n);
       }
+    } else if (cat === "verify") {
+      const exp = (state.fileExpectedHash || "").trim();
+      if (!exp) {
+        statusSpan.textContent = "Fill in: Expected checksum / hash";
+        statusSpan.className = "tool-msg bad";
+        return;
+      }
+      formData.append("expected_hash", exp);
+    }
+
+    runBtn.disabled = true;
+    statusSpan.textContent = cat === "verify" ? "Verifying checksum…" : "Processing…";
+    statusSpan.className = "tool-msg";
+
+    try {
+      const res = await T.file.transform(formData);
+      if (cat === "verify") {
+        if (res.match) {
+          statusSpan.textContent = `✓ Checksum Match! The file matches the expected ${res.algo.toUpperCase()} hash.`;
+          statusSpan.className = "tool-msg ok";
+        } else {
+          statusSpan.textContent = `✗ Checksum Mismatch! Actual file hash: ${res.actual_hash || "(different)"}`;
+          statusSpan.className = "tool-msg bad";
+        }
+      } else {
+        statusSpan.textContent = `✓ File restored and downloaded: ${res.filename || origName}`;
+        statusSpan.className = "tool-msg ok";
+      }
+    } catch (err) {
+      statusSpan.textContent = err.message || "Operation failed.";
+      statusSpan.className = "tool-msg bad";
+    } finally {
+      runBtn.disabled = false;
     }
   });
 
@@ -735,7 +938,7 @@ function renderFileDecryptUI() {
 function renderParams(){
   const defs = currentParams();
   els.params.innerHTML = "";
-  els.params.style.display = defs.length || state.tool.custom ? "" : "none";
+  els.params.style.display = (defs.length || state.tool.custom === "rsa") ? "" : "none";
   defs.forEach(p => {
     const wrap = document.createElement("div"); wrap.className = "param";
     const lab = document.createElement("label"); lab.textContent = p.label; lab.htmlFor = "p-" + p.id;
@@ -796,10 +999,13 @@ function renderModes(){
 function renderMeta(){
   const m = state.tool.modes[state.mode];
   els.endpoint.textContent = "POST " + m.endpoint;
-  els.run.textContent = m.name === "Hash" ? "Hash" : m.name;
+  els.run.textContent = m.name === "Hash" ? "Hash" : (m.name === "Identify algorithm" ? "Identify" : m.name);
   $("input-label").textContent = (state.tool.id === "bcrypt" && m.name === "Verify") ? "Password"
+    : (state.tool.id === "crack" && m.name === "Identify algorithm") ? "Hash to identify"
     : state.tool.id === "crack" ? "Hash to crack" : "Input";
-  els.input.placeholder = state.tool.id === "crack" ? "paste a hash, e.g. 5f4dcc3b5aa765d61d8327deb882cf99" : "Type or paste text here…";
+  els.input.placeholder = (state.tool.id === "crack" && m.name === "Identify algorithm")
+    ? "paste any unknown hash (e.g. 5f4dcc3b5aa765d61d8327deb882cf99 or $2y$10$…)"
+    : state.tool.id === "crack" ? "paste a hash, e.g. 5f4dcc3b5aa765d61d8327deb882cf99" : "Type or paste text here…";
 }
 
 function selectTool(id){
